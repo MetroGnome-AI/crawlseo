@@ -34,4 +34,5 @@ COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 USER nextjs
 EXPOSE 3000
 ENV PORT=3000
-CMD ["sh", "-c", "npx prisma migrate deploy && node server.js"]
+# npx unpinned pulls prisma@latest (7.x rejects url= in schema) — pin to the project version.
+CMD ["sh", "-c", "npx prisma@6.19.3 migrate deploy && node server.js"]
