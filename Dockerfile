@@ -10,6 +10,15 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npx prisma generate
+# Build-stage placeholders: lib/auth.ts throws at import when OAuth env is
+# empty, and next build imports route modules during page-data collection.
+# Real values come from .env at RUNTIME (standalone server reads process.env).
+ENV GOOGLE_CLIENT_ID=build-placeholder \
+    GOOGLE_CLIENT_SECRET=build-placeholder \
+    NEXTAUTH_SECRET=build-placeholder \
+    APP_SECRET=build-placeholder \
+    NEXTAUTH_URL=http://localhost:3000 \
+    DATABASE_URL=postgresql://build:build@localhost:5432/build
 RUN npm run build
 
 FROM base AS runner
