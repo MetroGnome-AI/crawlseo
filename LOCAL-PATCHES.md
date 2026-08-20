@@ -1,0 +1,77 @@
+# Local Patches
+
+Deviations from upstream `crawlseo/crawlseo` kept only in this self-hosted
+fork (not intended to go back upstream as-is, or not yet upstreamed). Keep
+these small and easy to re-apply if we ever rebase onto a newer upstream.
+
+Fork of record: `MetroGnome-AI/crawlseo` (`origin`, push) with
+`upstream` = `crawlseo/crawlseo` (pull-only catch-ups) — same remote
+convention as the nanoclaw fork.
+
+## 1. Pin Prisma CLI in Docker CMD (commit `e49dba6`)
+
+`Dockerfile` — the runtime `CMD` ran `npx prisma migrate deploy`, which
+resolves to whatever `prisma@latest` is at pull time. That drifted to
+Prisma 7.x, which rejects the `url = env(...)` datasource syntax our
+`prisma/schema.prisma` uses. Pinned to `npx prisma@6.19.3` to match the
+project's installed version.
+
+## 2. Build-stage OAuth/env placeholders (commit `ce62166`)
+
+`Dockerfile` — `lib/auth.ts` throws at import time when `GOOGLE_CLIENT_ID` /
+`GOOGLE_CLIENT_SECRET` / `NEXTAUTH_SECRET` / `APP_SECRET` / `DATABASE_URL`
+are empty, and `next build` imports route modules during page-data
+collection. Added placeholder values as build-stage `ENV` vars so the image
+builds without real secrets baked in; the standalone server reads the real
+values from `.env` at container runtime.
+
+## 3. `daysBack` param on `/api/gsc/sync` (uncommitted, 2026-07-28)
+
+`app/api/gsc/sync/route.ts` — the POST handler hardcoded
+`getDateRange(28)`, so the GSC sync could never pull more than a rolling
+28-day window. That's fine for day-to-day refreshes but blocks
+period-over-period comparisons and content-decay analysis, which need
+50+ days of history.
+
+Patched to accept an optional `daysBack` in the POST body (still defaults
+to 28, clamped to `[1, 500]`) so a one-off backfill can request a wider
+window. Auth/session/ownership checks are untouched. The route still
+duplicates the fetch/upsert logic inline rather than calling
+`lib/workers/gsc-sync.ts`'s `syncGSCDataForSite` (which already takes a
+`daysBack` param) — that duplication predates this patch and wasn't
+touched here.
+
+Used once for a manual GSC history backfill on 2026-07-28: `daysBack=120`
+then `daysBack=480`, both invoked via `syncGSCDataForSite` (the
+worker function this route duplicates, not the route itself) from a
+host-side `tsx` script (same pattern as `mcp/server.ts`), not through this
+HTTP route, since the route requires an authenticated browser session.
+Idempotent via the existing `Keyword`/`Page` `@@unique([siteId, ..., date])`
+constraints (upsert), so re-running with overlapping windows does not
+duplicate rows. Result: `Keyword`/`Page` history widened from 29 days
+(2026-06-26 → 2026-07-24) to 480 days back from today. See git history /
+ask Rob for the exact before/after row counts from that run.
+
+**Known pre-existing gotcha (not fixed here):** `Keyword`'s unique key is
+`(siteId, query, date)` — it does not include `device`/`country`, even
+though `fetchSearchAnalytics` is called with those as dimensions. GSC
+returns one row per (query, page, date, device, country) tuple, so when
+multiple such rows collapse onto the same `(siteId, query, date)` key,
+only the last upserted row survives per keyword/day. Out of scope for the
+backfill task; flagging so it doesn't get mistaken for a backfill bug.
+
+Also note: `fetchPageAnalytics` (used by both `route.ts` and
+`gsc-sync.ts`) does a single GSC API call with `rowLimit: 25000` and does
+not paginate past that, unlike `fetchSearchAnalytics`. Not hit at
+120-480 days for this one site's page count, but would silently truncate
+for a bigger site/date range.
+
+## 4. Machine service surface `/api/svc/<tool>` (commit `31650db`, 2026-08-20)
+
+`app/api/svc/[tool]/route.ts` — the MCP tool set over HTTP with a bearer
+service token (`Authorization: Bearer $CRAWLSEO_SERVICE_TOKEN`, fail-closed
+when the env is unset), JSON responses, same lib queries as `mcp/server.ts`.
+Added for external engines/dashboards — the FLOW platform's
+`providers/crawlseo` adapter consumes it. Instance-level scope (no per-user
+filtering), matching the MCP server's semantics. Upstream-PR candidate —
+if accepted, this patch retires.
