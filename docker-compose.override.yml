@@ -1,0 +1,24 @@
+services:
+  app:
+    ports: !override
+      - "3200:3000"
+    environment:
+      TZ: America/Chicago
+      # Next.js standalone binds to $HOSTNAME (container id) by default, which
+      # made the localhost healthcheck fail. Bind all container interfaces.
+      # (Healthcheck uses 127.0.0.1: busybox wget tries ::1 first for localhost,
+      # and Node on 0.0.0.0 is IPv4-only.)
+      HOSTNAME: 0.0.0.0
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+  db:
+    # Published to host loopback only (5432 is taken by onecli-postgres) so the
+    # MCP server (npx tsx mcp/server.ts on the host) can reach the database.
+    ports: !override
+      - "127.0.0.1:5433:5432"
+    environment:
+      TZ: America/Chicago
+      PGTZ: America/Chicago
