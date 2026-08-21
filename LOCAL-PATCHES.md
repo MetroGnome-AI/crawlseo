@@ -25,7 +25,7 @@ collection. Added placeholder values as build-stage `ENV` vars so the image
 builds without real secrets baked in; the standalone server reads the real
 values from `.env` at container runtime.
 
-## 3. `daysBack` param on `/api/gsc/sync` (uncommitted, 2026-07-28)
+## 3. `daysBack` param on `/api/gsc/sync` (2026-07-28 — upstream draft PR crawlseo/crawlseo#21)
 
 `app/api/gsc/sync/route.ts` — the POST handler hardcoded
 `getDateRange(28)`, so the GSC sync could never pull more than a rolling
@@ -66,7 +66,7 @@ not paginate past that, unlike `fetchSearchAnalytics`. Not hit at
 120-480 days for this one site's page count, but would silently truncate
 for a bigger site/date range.
 
-## 4. Machine service surface `/api/svc/<tool>` (commit `31650db`, 2026-08-20)
+## 4. Machine service surface `/api/svc/<tool>` (commit `31650db`, 2026-08-20 — upstream draft PR crawlseo/crawlseo#20)
 
 `app/api/svc/[tool]/route.ts` — the MCP tool set over HTTP with a bearer
 service token (`Authorization: Bearer $CRAWLSEO_SERVICE_TOKEN`, fail-closed
