@@ -24,15 +24,15 @@ COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
-# Reuse the Prisma CLI already built in the deps/builder stages instead of
-# running a second npm install under QEMU emulation (which crashes with SIGILL
-# on arm64). Only the CLI package and its engine binaries are needed for
-# `prisma migrate deploy` at container startup.
-COPY --from=builder /app/node_modules/prisma ./node_modules/prisma
-COPY --from=builder /app/node_modules/@prisma/engines ./node_modules/@prisma/engines
-COPY --from=builder /app/node_modules/.bin/prisma ./node_modules/.bin/prisma
+# local: upstream copies a subset of the Prisma CLI's packages into the runner,
+# which misses transitive deps (@prisma/debug, @prisma/config's deps, the CLI's
+# sibling WASM) and crashes `migrate deploy` at boot. Install the pinned CLI
+# into the runner at build time instead — no runtime network, complete tree.
+RUN npm install --no-save --no-audit --no-fund --omit=dev prisma@6.19.3
 USER nextjs
 EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
+# local: .bin/prisma is an npm symlink; COPY flattens it and the bundled CLI then
+# cannot find its sibling WASM (prisma_schema_build_bg.wasm). Run the real entry.
 CMD ["sh", "-c", "node_modules/.bin/prisma migrate deploy && node server.js"]

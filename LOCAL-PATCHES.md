@@ -81,3 +81,15 @@ Added for external engines/dashboards — the FLOW platform's
 `providers/crawlseo` adapter consumes it. Instance-level scope (no per-user
 filtering), matching the MCP server's semantics. Upstream-PR candidate —
 if accepted, this patch retires.
+
+## 5. Runner-stage Prisma CLI install (2026-08-24, upstream catch-up follow-up)
+
+`Dockerfile` — upstream #23 replaced the runner's `npm install` with copies of
+`node_modules/prisma`, `@prisma/engines` and `.bin/prisma`. That misses
+transitive deps (`@prisma/debug`, then `@prisma/config` → `effect`, …) and
+flattens the `.bin` symlink so the bundled CLI cannot find its sibling WASM;
+`prisma migrate deploy` crashes at boot (restart loop; seen live 2026-08-24 on
+x86, three distinct MODULE_NOT_FOUND/ENOENT faults in a row). Replaced with
+`RUN npm install --no-save --omit=dev prisma@6.19.3` in the runner — complete
+tree, pinned, no runtime network. Worth reporting upstream: their published
+image likely crashes identically.
