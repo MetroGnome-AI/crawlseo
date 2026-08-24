@@ -1,5 +1,9 @@
 services:
   app:
+    # Fork carries patches (LOCAL-PATCHES.md): build from this checkout, never
+    # pull upstream's published image (B27: recorded source).
+    build: .
+    image: crawlseo-local:main
     ports: !override
       - "3200:3000"
     environment:

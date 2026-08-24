@@ -8,7 +8,13 @@ Fork of record: `MetroGnome-AI/crawlseo` (`origin`, push) with
 `upstream` = `crawlseo/crawlseo` (pull-only catch-ups) — same remote
 convention as the nanoclaw fork.
 
-## 1. Pin Prisma CLI in Docker CMD (commit `e49dba6`)
+Upstream catch-up 2026-08-24 (14 commits, through `e75b042`): patches 1 and 2
+retired (superseded upstream); 3 re-applied over upstream's reauth rewrite of
+the same route; 4 untouched. `docker-compose.override.yml` now pins
+`build: .` / `image: crawlseo-local:main` because upstream's compose switched
+to pulling a published ghcr image — a patched fork must build itself.
+
+## 1. ~~Pin Prisma CLI in Docker CMD~~ — RETIRED 2026-08-24: upstream #23 copies the built Prisma CLI from the builder stage (no npx at runtime). Was commit `e49dba6`.
 
 `Dockerfile` — the runtime `CMD` ran `npx prisma migrate deploy`, which
 resolves to whatever `prisma@latest` is at pull time. That drifted to
@@ -16,7 +22,7 @@ Prisma 7.x, which rejects the `url = env(...)` datasource syntax our
 `prisma/schema.prisma` uses. Pinned to `npx prisma@6.19.3` to match the
 project's installed version.
 
-## 2. Build-stage OAuth/env placeholders (commit `ce62166`)
+## 2. ~~Build-stage OAuth/env placeholders~~ — RETIRED 2026-08-24: upstream #24 dropped the placeholder secrets from the build stage. Was commit `ce62166`.
 
 `Dockerfile` — `lib/auth.ts` throws at import time when `GOOGLE_CLIENT_ID` /
 `GOOGLE_CLIENT_SECRET` / `NEXTAUTH_SECRET` / `APP_SECRET` / `DATABASE_URL`
