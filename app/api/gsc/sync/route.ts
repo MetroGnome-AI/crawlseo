@@ -5,7 +5,7 @@ import {
   fetchPageAnalytics,
   ReauthRequiredError,
 } from "@/lib/google";
-import { getDateRange } from "@/lib/date-utils";
+import { getDateRange, getDataLagDate } from "@/lib/date-utils";
 
 export async function POST(req: Request) {
   try {
@@ -48,8 +48,11 @@ export async function POST(req: Request) {
       );
     }
 
-    // Fetch last `daysBack` days of data (28 by default)
-    const { start, end } = getDateRange(daysBack);
+    // Fetch last `daysBack` days of data (28 by default) — end at the data
+    // lag boundary (3 days ago) because Google's most recent 2-3 days are
+    // always incomplete.
+    const { start } = getDateRange(daysBack);
+    const end = getDataLagDate();
 
     const [keywords, pages] = await Promise.all([
       fetchSearchAnalytics(
