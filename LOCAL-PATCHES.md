@@ -10,7 +10,12 @@ convention as the nanoclaw fork.
 
 Upstream catch-up 2026-08-24 (14 commits, through `e75b042`): patches 1 and 2
 retired (superseded upstream); 3 re-applied over upstream's reauth rewrite of
-the same route; 4 untouched. `docker-compose.override.yml` now pins
+the same route; 4 untouched.
+
+Upstream catch-up 2026-09-03 (7 commits, through upstream #25→#32 series):
+patch 5 retired (upstream #32 supersedes it — our issue #27 fixed properly);
+patch 3 re-applied combined with upstream's data-lag end boundary (#26);
+patch 4 untouched (PR #20 still open awaiting review). `docker-compose.override.yml` now pins
 `build: .` / `image: crawlseo-local:main` because upstream's compose switched
 to pulling a published ghcr image — a patched fork must build itself.
 
@@ -82,7 +87,7 @@ Added for external engines/dashboards — the FLOW platform's
 filtering), matching the MCP server's semantics. Upstream-PR candidate —
 if accepted, this patch retires.
 
-## 5. Runner-stage Prisma CLI install (2026-08-24, upstream catch-up follow-up)
+## 5. ~~Runner-stage Prisma CLI install~~ — RETIRED 2026-09-03: upstream #32 ships the full Prisma CLI dependency closure in the runner (fixes our #27). Was carried since 2026-08-24.
 
 `Dockerfile` — upstream #23 replaced the runner's `npm install` with copies of
 `node_modules/prisma`, `@prisma/engines` and `.bin/prisma`. That misses
