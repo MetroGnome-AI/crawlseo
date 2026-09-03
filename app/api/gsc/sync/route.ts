@@ -1,11 +1,7 @@
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
-import {
-  fetchSearchAnalytics,
-  fetchPageAnalytics,
-  ReauthRequiredError,
-} from "@/lib/google";
-import { getDateRange, getDataLagDate } from "@/lib/date-utils";
+import { ReauthRequiredError } from "@/lib/google";
+import { syncSiteGsc } from "@/lib/gsc-sync";
 
 export async function POST(req: Request) {
   try {
@@ -48,88 +44,17 @@ export async function POST(req: Request) {
       );
     }
 
-    // Fetch last `daysBack` days of data (28 by default) — end at the data
-    // lag boundary (3 days ago) because Google's most recent 2-3 days are
-    // always incomplete.
-    const { start } = getDateRange(daysBack);
-    const end = getDataLagDate();
-
-    const [keywords, pages] = await Promise.all([
-      fetchSearchAnalytics(
-        session.user.id,
-        site.gscProperty,
-        start,
-        end,
-        ["query", "page", "date", "device", "country"]
-      ),
-      fetchPageAnalytics(session.user.id, site.gscProperty, start, end),
-    ]);
-
-    // Insert/update keywords
-    for (const keyword of keywords) {
-      await db.keyword.upsert({
-        where: {
-          siteId_query_date: {
-            siteId,
-            query: keyword.query,
-            date: new Date(keyword.date),
-          },
-        },
-        create: {
-          siteId,
-          query: keyword.query,
-          date: new Date(keyword.date),
-          clicks: keyword.clicks,
-          impressions: keyword.impressions,
-          ctr: keyword.ctr,
-          position: keyword.position,
-          page: keyword.page,
-          device: keyword.device,
-          country: keyword.country,
-        },
-        update: {
-          clicks: keyword.clicks,
-          impressions: keyword.impressions,
-          ctr: keyword.ctr,
-          position: keyword.position,
-        },
-      });
-    }
-
-    // Insert/update pages
-    for (const page of pages) {
-      if (!page.page) continue;
-
-      await db.page.upsert({
-        where: {
-          siteId_url_date: {
-            siteId,
-            url: page.page,
-            date: new Date(page.date),
-          },
-        },
-        create: {
-          siteId,
-          url: page.page,
-          date: new Date(page.date),
-          clicks: page.clicks,
-          impressions: page.impressions,
-          ctr: page.ctr,
-          position: page.position,
-        },
-        update: {
-          clicks: page.clicks,
-          impressions: page.impressions,
-          ctr: page.ctr,
-          position: page.position,
-        },
-      });
-    }
+    const result = await syncSiteGsc(
+      session.user.id,
+      siteId,
+      site.gscProperty,
+      daysBack
+    );
 
     return Response.json({
       success: true,
-      keywordsInserted: keywords.length,
-      pagesInserted: pages.length,
+      keywordsInserted: result.keywordsInserted,
+      pagesInserted: result.pagesInserted,
     });
   } catch (error) {
     if (error instanceof ReauthRequiredError) {

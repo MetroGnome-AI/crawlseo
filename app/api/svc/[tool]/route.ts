@@ -24,6 +24,8 @@ import {
 } from "@/lib/seo-metrics";
 import { getAllOpportunities } from "@/lib/seo-opportunities";
 import { runSiteCrawl } from "@/lib/crawler/engine";
+import { syncSiteGsc } from "@/lib/gsc-sync";
+import { ReauthRequiredError } from "@/lib/google";
 
 function authorized(req: Request): boolean {
   const expected = process.env.CRAWLSEO_SERVICE_TOKEN || "";
@@ -168,6 +170,30 @@ const handlers: Record<string, (args: Args) => Promise<unknown>> = {
     const siteId = str(args.siteId);
     if (!siteId) throw new SvcError(400, "siteId required");
     return getAllOpportunities(siteId);
+  },
+
+  // Trigger a GSC sync for one site — the machine-surface twin of the
+  // session route (same core via lib/gsc-sync). Runs as the site's owner
+  // (instance-level scope, like every other tool here). Lets scheduled
+  // engines keep Search Console data current without a browser session.
+  async gsc_sync(args) {
+    const siteId = str(args.siteId);
+    if (!siteId) throw new SvcError(400, "siteId required");
+    const daysBack = Math.min(Math.max(num(args.daysBack, 28), 1), 500);
+    const site = await db.site.findUnique({
+      where: { id: siteId },
+      select: { userId: true, gscProperty: true },
+    });
+    if (!site) throw new SvcError(404, `site not found: ${siteId}`);
+    if (!site.gscProperty)
+      throw new SvcError(400, "site does not have a GSC property connected");
+    try {
+      return await syncSiteGsc(site.userId, siteId, site.gscProperty, daysBack);
+    } catch (err) {
+      if (err instanceof ReauthRequiredError)
+        throw new SvcError(401, `REAUTH_REQUIRED: ${err.message}`);
+      throw err;
+    }
   },
 };
 

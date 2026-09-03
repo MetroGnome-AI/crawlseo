@@ -87,6 +87,16 @@ Added for external engines/dashboards — the FLOW platform's
 filtering), matching the MCP server's semantics. Upstream-PR candidate —
 if accepted, this patch retires.
 
+## 6. `gsc_sync` tool on the machine service surface (2026-09-03 — upstream-PR candidate, extends #20)
+
+`lib/gsc-sync.ts` (new) extracts the GSC sync core out of
+`app/api/gsc/sync/route.ts` so the session route and a new `gsc_sync`
+handler in `app/api/svc/[tool]/route.ts` share one implementation. Lets
+scheduled engines keep Search Console data current without a browser
+session (the July→September data stall happened because the UI button was
+the only trigger). Runs as the site's owner; maps ReauthRequiredError to a
+401 with `REAUTH_REQUIRED`.
+
 ## 5. ~~Runner-stage Prisma CLI install~~ — RETIRED 2026-09-03: upstream #32 ships the full Prisma CLI dependency closure in the runner (fixes our #27). Was carried since 2026-08-24.
 
 `Dockerfile` — upstream #23 replaced the runner's `npm install` with copies of
