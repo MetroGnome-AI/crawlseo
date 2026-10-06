@@ -38,9 +38,13 @@ export function CrawlStatusPoller({ siteId, crawlId }: CrawlStatusPollerProps) {
   }, [siteId, crawlId, router]);
 
   useEffect(() => {
-    poll();
+    // First poll right away (from a timer, so no state is set during the effect), then every 3 s.
+    const first = setTimeout(poll, 0);
     const interval = setInterval(poll, 3000);
-    return () => clearInterval(interval);
+    return () => {
+      clearTimeout(first);
+      clearInterval(interval);
+    };
   }, [poll]);
 
   const isRunning = !status || status.status === "RUNNING" || status.status === "PENDING";
@@ -48,11 +52,12 @@ export function CrawlStatusPoller({ siteId, crawlId }: CrawlStatusPollerProps) {
   if (!isRunning) return null;
 
   return (
-    <div className="panel mb-6 flex items-center gap-3 border-primary/30 bg-primary/5 px-5 py-4">
-      <Loader2 className="size-5 animate-spin text-primary" />
+    <div role="status"
+      className="mb-6 flex items-center gap-3 rounded-xl border border-brand-200 bg-brand-50 px-5 py-4">
+      <Loader2 className="size-5 animate-spin text-brand-500" aria-hidden />
       <div>
-        <p className="text-sm font-medium text-foreground">
-          Crawl in progress...
+        <p className="text-sm font-medium text-text-strong">
+          Crawl in progress…
         </p>
         <p className="text-xs text-muted-foreground">
           {status?.pagesFound ?? 0} pages found · {status?.issuesFound ?? 0} issues
