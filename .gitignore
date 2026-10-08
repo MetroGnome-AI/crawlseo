@@ -49,3 +49,5 @@ docs/launch/
 # playwright
 /test-results/
 /playwright-report/
+ops/logs/
+ops/backups/
