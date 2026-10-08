@@ -16,6 +16,11 @@ on:
 
 env:
   REGISTRY: ghcr.io
+  # Lower-cased per job (see "Lower-case the image name"): registries reject
+  # upper-case repository paths, and github.repository keeps the owner's case
+  # (MetroGnome-AI/crawlseo). metadata-action lower-cases on its own; the
+  # push-by-digest step uses the raw name, so a fork under a mixed-case owner
+  # failed there with "repository name must be lowercase".
   IMAGE_NAME: ${{ github.repository }}
 
 concurrency:
@@ -45,6 +50,8 @@ jobs:
             runner: ubuntu-24.04-arm
 
     steps:
+      - name: Lower-case the image name
+        run: echo "IMAGE_NAME=${IMAGE_NAME,,}" >> "$GITHUB_ENV"
       - name: Check out repository
         uses: actions/checkout@v6
 
@@ -155,6 +162,8 @@ jobs:
       packages: write
 
     steps:
+      - name: Lower-case the image name
+        run: echo "IMAGE_NAME=${IMAGE_NAME,,}" >> "$GITHUB_ENV"
       - name: Require both platform builds
         if: needs.build.result != 'success'
         run: |
