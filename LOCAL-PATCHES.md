@@ -116,3 +116,14 @@ x86, three distinct MODULE_NOT_FOUND/ENOENT faults in a row). Replaced with
 `RUN npm install --no-save --omit=dev prisma@6.19.3` in the runner — complete
 tree, pinned, no runtime network. Worth reporting upstream: their published
 image likely crashes identically.
+
+## 7. Lower-cased image name in `docker-publish.yml` (2026-10-08 — upstream-PR candidate)
+
+Upstream #54 pushes each platform image by digest with
+`tags: ghcr.io/${{ github.repository }}` (raw). `github.repository` keeps the
+owner's case, and registries reject upper-case repository paths, so on this
+fork (`MetroGnome-AI/crawlseo`) both platform builds failed at "Push image by
+digest" after the smoke test passed (first run after the catch-up, failure
+e-mail to the owner). A one-line step at the top of both jobs rewrites
+`IMAGE_NAME` to lower case. Upstream's own org is lower-case so it never saw
+it; any mixed-case fork would. Harmless if upstream adopts it.
