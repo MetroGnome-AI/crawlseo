@@ -46,6 +46,9 @@ fi
 echo "-- migrations applied:"
 docker compose exec -T db psql -U crawlseo -d crawlseo -Atc "select migration_name from _prisma_migrations order by finished_at desc limit 6"
 echo "-- version served: $(curl -s -m 10 http://127.0.0.1:3200/api/health)"
-echo "-- dashboard SEO endpoints (should be 200 with JSON):"
-for p in pulse sitehealth movers; do printf '   %-10s ' "$p"; curl -s -m 25 -o /dev/null -w 'HTTP %{http_code} %{size_download}B\n' "https://hal.tail2ae7ab.ts.net/api/seo/$p"; done
+echo "-- machine surface (what the dashboard's provider calls) and the table it reads:"
+set -a; . ./.env; set +a
+curl -s -m 25 -o /dev/null -w '   svc list_sites: HTTP %{http_code} %{size_download}B\n' -X POST -H "Authorization: Bearer ${CRAWLSEO_SERVICE_TOKEN:-}" -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:3200/api/svc/list_sites
+echo "   Keyword rows: $(docker compose exec -T db psql -U crawlseo -d crawlseo -Atc 'select count(*) from "Keyword"')  (baseline before cutover: see ops/logs)"
+echo "-- dashboard: open the SEO page in a browser and confirm pulse/movers render (its API is session-authenticated; curl shows 401 by design)"
 echo "== DONE $(date -Is) — merge main when satisfied: git checkout main && git merge --ff-only catchup-2026-10-08 && git push origin main"
