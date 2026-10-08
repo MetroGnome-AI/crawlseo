@@ -19,6 +19,14 @@ patch 4 untouched (PR #20 still open awaiting review). `docker-compose.override.
 `build: .` / `image: crawlseo-local:main` because upstream's compose switched
 to pulling a published ghcr image — a patched fork must build itself.
 
+Upstream catch-up 2026-10-08 (36 commits, v0.2.0–v0.2.2 through `92c254d`):
+patch 3 re-applied as a `daysBack` clamp over upstream's `runGSCSync` (#44
+made the worker core the single sync path and gave it a `daysBack` param);
+patch 6's `lib/gsc-sync.ts` RETIRED — superseded by that same core; the
+`gsc_sync` svc tool stays and now calls `runGSCSync` directly. Patch 4
+untouched. Upstream deleted `docker-compose.override.yml`; ours is kept (it
+is the fork's build pin) and upstream now binds the db port to loopback.
+
 ## 1. ~~Pin Prisma CLI in Docker CMD~~ — RETIRED 2026-08-24: upstream #23 copies the built Prisma CLI from the builder stage (no npx at runtime). Was commit `e49dba6`.
 
 `Dockerfile` — the runtime `CMD` ran `npx prisma migrate deploy`, which
@@ -87,7 +95,7 @@ Added for external engines/dashboards — the FLOW platform's
 filtering), matching the MCP server's semantics. Upstream-PR candidate —
 if accepted, this patch retires.
 
-## 6. `gsc_sync` tool on the machine service surface (2026-09-03 — upstream-PR candidate, extends #20)
+## 6. `gsc_sync` tool on the machine service surface (2026-09-03 — upstream-PR candidate, extends #20) — library half RETIRED 2026-10-08 (upstream #44 `runGSCSync`); the tool handler in `app/api/svc/[tool]/route.ts` remains
 
 `lib/gsc-sync.ts` (new) extracts the GSC sync core out of
 `app/api/gsc/sync/route.ts` so the session route and a new `gsc_sync`

@@ -1,4 +1,17 @@
+import { db } from "@/lib/db";
+import { decrypt } from "@/lib/encryption";
+
 const PAGESPEED_API_BASE = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed";
+
+async function resolveApiKey(userId?: string): Promise<string | undefined> {
+  if (userId) {
+    const stored = await db.apiKey.findUnique({
+      where: { userId_provider: { userId, provider: "google_pagespeed" } },
+    });
+    if (stored) return decrypt(stored.encryptedPassword);
+  }
+  return process.env.GOOGLE_PAGESPEED_KEY;
+}
 
 export interface CoreWebVitals {
   lcp?: number; // Largest Contentful Paint (seconds)
@@ -23,6 +36,26 @@ export interface PageSpeedResult {
   fetchTime: string;
 }
 
+export type PageSpeedErrorCode = "QUOTA_EXCEEDED" | "REQUEST_FAILED";
+
+export class PageSpeedError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: PageSpeedErrorCode
+  ) {
+    super(
+      code === "QUOTA_EXCEEDED"
+        ? "PageSpeed Insights quota exhausted"
+        : `PageSpeed Insights request failed (HTTP ${status})`
+    );
+    this.name = "PageSpeedError";
+  }
+}
+
+function isQuotaError(status: number, body: string): boolean {
+  return status === 429 || /RESOURCE_EXHAUSTED|quota exceeded/i.test(body);
+}
+
 /**
  * Converts milliseconds to seconds
  */
@@ -35,15 +68,17 @@ function msToSeconds(ms?: number): number | undefined {
  */
 export async function fetchPageSpeed(
   url: string,
-  strategy: "MOBILE" | "DESKTOP" = "MOBILE"
+  strategy: "MOBILE" | "DESKTOP" = "MOBILE",
+  userId?: string
 ): Promise<PageSpeedResult> {
   const params = new URLSearchParams({
     url,
     category: "PERFORMANCE",
     strategy,
   });
-  if (process.env.GOOGLE_PAGESPEED_KEY) {
-    params.set("key", process.env.GOOGLE_PAGESPEED_KEY);
+  const apiKey = await resolveApiKey(userId);
+  if (apiKey) {
+    params.set("key", apiKey);
   }
 
   const response = await fetch(`${PAGESPEED_API_BASE}?${params}`, {
@@ -54,8 +89,15 @@ export async function fetchPageSpeed(
 
   if (!response.ok) {
     const body = await response.text().catch(() => "");
-    throw new Error(
-      `Failed to fetch PageSpeed data: ${response.status} ${response.statusText}${body ? ` — ${body.slice(0, 200)}` : ""}. Set GOOGLE_PAGESPEED_KEY for reliable quota.`
+    // Google's error body is for operators, not end users: log it here and
+    // throw a clean message the UI can show as-is.
+    console.error(
+      `PageSpeed API ${response.status} ${response.statusText} for ${url}:`,
+      body.slice(0, 2000)
+    );
+    throw new PageSpeedError(
+      response.status,
+      isQuotaError(response.status, body) ? "QUOTA_EXCEEDED" : "REQUEST_FAILED"
     );
   }
 

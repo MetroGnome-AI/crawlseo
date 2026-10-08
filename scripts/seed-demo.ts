@@ -1,6 +1,8 @@
 #!/usr/bin/env tsx
 /**
- * Seed the database with realistic demo data for "acme.com".
+ * Seed the database with demo data for Quilltab (quilltab.app), a fictional
+ * invoicing app. It is the same sample brand the crawlseo.cloud mock-ups use;
+ * no real company appears in the data.
  *
  * Usage:
  *   npx tsx scripts/seed-demo.ts          # seed
@@ -10,11 +12,15 @@
  * at least once). To target a specific user pass --email=you@example.com.
  */
 
-import { PrismaClient } from "@prisma/client";
+import { IssueSeverity, IssueType, PrismaClient } from "@prisma/client";
+import { gscDate } from "../lib/google/gsc-date";
+import { REMEDIATION } from "../lib/crawler/remediation";
 const db = new PrismaClient();
 
-const DEMO_DOMAIN = "acme.com";
-const DEMO_GSC = "sc-domain:acme.com";
+const DEMO_DOMAIN = "quilltab.app";
+const DEMO_GSC = "sc-domain:quilltab.app";
+// Sites created by earlier versions of this script, removed by --clean and before seeding.
+const OLD_DEMO_DOMAINS = ["acme.com"];
 
 // -------------------------------------------------------------------------
 // Helpers
@@ -29,11 +35,20 @@ function randf(min: number, max: number, decimals = 2) {
 function pick<T>(arr: T[]): T {
   return arr[rand(0, arr.length - 1)];
 }
+// Days of GSC history: the current 28-day period and the previous one.
+const HISTORY_DAYS = 56;
+// Traffic multiplier: today's level for the newest day, about 25% lower 56 days back.
+function trend(day: number) {
+  return 1 - (0.25 * day) / (HISTORY_DAYS - 1);
+}
+// Position drift: older days rank up to 0.6 places lower.
+function drift(day: number) {
+  return (0.6 * day) / (HISTORY_DAYS - 1);
+}
+// UTC midnight, the same convention the GSC sync writes (see gscDate).
 function daysAgo(n: number) {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  d.setHours(0, 0, 0, 0);
-  return d;
+  const d = new Date(Date.now() - n * 86_400_000);
+  return gscDate(d.toISOString().slice(0, 10));
 }
 
 // -------------------------------------------------------------------------
@@ -41,122 +56,130 @@ function daysAgo(n: number) {
 // -------------------------------------------------------------------------
 
 const KEYWORDS = [
-  // High intent / brand
-  { q: "acme crm software", posRange: [1, 3], clickRange: [80, 160], impRange: [900, 1400] },
-  { q: "acme pricing", posRange: [1, 2], clickRange: [60, 120], impRange: [500, 800] },
-  { q: "acme vs salesforce", posRange: [2, 5], clickRange: [40, 90], impRange: [300, 600] },
-  { q: "acme login", posRange: [1, 1], clickRange: [200, 400], impRange: [800, 1200] },
-  { q: "acme reviews", posRange: [1, 4], clickRange: [30, 70], impRange: [250, 500] },
+  // Brand
+  { q: "quilltab", posRange: [1, 2], clickRange: [80, 160], impRange: [900, 1400] },
+  { q: "quilltab pricing", posRange: [1, 2], clickRange: [60, 120], impRange: [500, 800] },
+  { q: "quilltab login", posRange: [1, 1], clickRange: [200, 400], impRange: [800, 1200] },
+  { q: "quilltab reviews", posRange: [1, 4], clickRange: [30, 70], impRange: [250, 500] },
+  { q: "quilltab invoice app", posRange: [1, 3], clickRange: [40, 90], impRange: [300, 600] },
   // Product / features
-  { q: "best crm for startups", posRange: [4, 12], clickRange: [15, 50], impRange: [400, 900] },
-  { q: "crm software comparison", posRange: [6, 15], clickRange: [10, 35], impRange: [500, 1100] },
-  { q: "free crm tools", posRange: [8, 20], clickRange: [5, 25], impRange: [600, 1300] },
-  { q: "crm with email integration", posRange: [3, 9], clickRange: [20, 55], impRange: [200, 500] },
-  { q: "small business crm", posRange: [5, 14], clickRange: [12, 40], impRange: [350, 800] },
-  { q: "crm pipeline management", posRange: [3, 8], clickRange: [18, 45], impRange: [180, 400] },
-  { q: "sales automation software", posRange: [7, 18], clickRange: [8, 30], impRange: [300, 700] },
-  { q: "contact management tool", posRange: [4, 11], clickRange: [14, 38], impRange: [220, 500] },
-  { q: "lead tracking software", posRange: [5, 13], clickRange: [10, 32], impRange: [250, 550] },
-  { q: "customer relationship management", posRange: [9, 22], clickRange: [5, 18], impRange: [700, 1500] },
+  { q: "best invoicing app for freelancers", posRange: [4, 12], clickRange: [15, 50], impRange: [400, 900] },
+  { q: "invoice software comparison", posRange: [6, 15], clickRange: [10, 35], impRange: [500, 1100] },
+  { q: "free invoice generator", posRange: [8, 20], clickRange: [5, 25], impRange: [600, 1300] },
+  { q: "recurring invoices app", posRange: [3, 9], clickRange: [20, 55], impRange: [200, 500] },
+  { q: "small business invoicing", posRange: [5, 14], clickRange: [12, 40], impRange: [350, 800] },
+  { q: "invoice payment reminders", posRange: [3, 8], clickRange: [18, 45], impRange: [180, 400] },
+  { q: "expense tracking for freelancers", posRange: [7, 18], clickRange: [8, 30], impRange: [300, 700] },
+  { q: "time tracking and invoicing", posRange: [4, 11], clickRange: [14, 38], impRange: [220, 500] },
+  { q: "online invoice with card payments", posRange: [5, 13], clickRange: [10, 32], impRange: [250, 550] },
+  { q: "invoicing software", posRange: [9, 22], clickRange: [5, 18], impRange: [700, 1500] },
   // Long tail
-  { q: "how to set up crm for small team", posRange: [3, 8], clickRange: [8, 22], impRange: [100, 250] },
-  { q: "crm integrations with slack", posRange: [2, 6], clickRange: [12, 30], impRange: [80, 200] },
-  { q: "migrate from hubspot to acme", posRange: [1, 3], clickRange: [15, 35], impRange: [60, 150] },
-  { q: "crm reporting dashboard", posRange: [4, 10], clickRange: [10, 28], impRange: [150, 350] },
-  { q: "crm mobile app ios android", posRange: [6, 15], clickRange: [6, 20], impRange: [180, 400] },
-  { q: "deal pipeline stages best practices", posRange: [2, 7], clickRange: [9, 25], impRange: [120, 280] },
-  { q: "crm data import csv", posRange: [3, 9], clickRange: [7, 18], impRange: [90, 200] },
-  { q: "sales forecasting tools", posRange: [8, 19], clickRange: [4, 15], impRange: [250, 600] },
-  { q: "crm email templates", posRange: [5, 12], clickRange: [11, 28], impRange: [160, 380] },
-  { q: "automated follow up emails crm", posRange: [3, 8], clickRange: [13, 32], impRange: [100, 240] },
+  { q: "how to write an invoice as a freelancer", posRange: [3, 8], clickRange: [8, 22], impRange: [100, 250] },
+  { q: "invoice template for designers", posRange: [2, 6], clickRange: [12, 30], impRange: [80, 200] },
+  { q: "send invoice in another currency", posRange: [1, 3], clickRange: [15, 35], impRange: [60, 150] },
+  { q: "freelance income report", posRange: [4, 10], clickRange: [10, 28], impRange: [150, 350] },
+  { q: "invoice app ios android", posRange: [6, 15], clickRange: [6, 20], impRange: [180, 400] },
+  { q: "late payment email wording", posRange: [2, 7], clickRange: [9, 25], impRange: [120, 280] },
+  { q: "import clients from csv", posRange: [3, 9], clickRange: [7, 18], impRange: [90, 200] },
+  { q: "cash flow forecast freelancer", posRange: [8, 19], clickRange: [4, 15], impRange: [250, 600] },
+  { q: "quote to invoice conversion", posRange: [5, 12], clickRange: [11, 28], impRange: [160, 380] },
+  { q: "automatic invoice follow up", posRange: [3, 8], clickRange: [13, 32], impRange: [100, 240] },
   // Informational
-  { q: "what is a crm", posRange: [12, 30], clickRange: [2, 8], impRange: [800, 2000] },
-  { q: "crm benefits for small business", posRange: [6, 16], clickRange: [5, 15], impRange: [200, 500] },
-  { q: "crm implementation guide", posRange: [4, 10], clickRange: [8, 20], impRange: [120, 300] },
-  { q: "crm vs spreadsheet", posRange: [3, 7], clickRange: [10, 28], impRange: [150, 350] },
-  { q: "how to choose a crm", posRange: [5, 14], clickRange: [6, 18], impRange: [180, 420] },
-  { q: "crm onboarding checklist", posRange: [2, 6], clickRange: [12, 30], impRange: [80, 200] },
-  { q: "crm roi calculator", posRange: [4, 11], clickRange: [7, 20], impRange: [100, 250] },
-  { q: "sales team productivity tips", posRange: [8, 20], clickRange: [3, 12], impRange: [250, 600] },
-  { q: "b2b sales funnel stages", posRange: [6, 15], clickRange: [5, 16], impRange: [180, 400] },
-  { q: "customer retention strategies", posRange: [10, 25], clickRange: [2, 9], impRange: [300, 700] },
-  // Competitor comparison
-  { q: "acme vs hubspot", posRange: [2, 6], clickRange: [25, 60], impRange: [200, 450] },
-  { q: "acme vs pipedrive", posRange: [1, 4], clickRange: [18, 45], impRange: [120, 300] },
-  { q: "acme vs zoho crm", posRange: [3, 7], clickRange: [15, 38], impRange: [100, 250] },
-  { q: "crm alternatives to salesforce", posRange: [5, 12], clickRange: [8, 25], impRange: [200, 500] },
-  { q: "cheapest crm software 2026", posRange: [4, 10], clickRange: [10, 28], impRange: [150, 350] },
+  { q: "what is an invoice number", posRange: [12, 30], clickRange: [2, 8], impRange: [800, 2000] },
+  { q: "invoice vs receipt", posRange: [6, 16], clickRange: [5, 15], impRange: [200, 500] },
+  { q: "vat on freelance invoices", posRange: [4, 10], clickRange: [8, 20], impRange: [120, 300] },
+  { q: "invoice payment terms net 30", posRange: [3, 7], clickRange: [10, 28], impRange: [150, 350] },
+  { q: "how to choose invoicing software", posRange: [5, 14], clickRange: [6, 18], impRange: [180, 420] },
+  { q: "freelance invoicing checklist", posRange: [2, 6], clickRange: [12, 30], impRange: [80, 200] },
+  { q: "hourly rate calculator freelance", posRange: [4, 11], clickRange: [7, 20], impRange: [100, 250] },
+  { q: "getting paid faster as a freelancer", posRange: [8, 20], clickRange: [3, 12], impRange: [250, 600] },
+  { q: "deposit invoice for projects", posRange: [6, 15], clickRange: [5, 16], impRange: [180, 400] },
+  { q: "client payment habits", posRange: [10, 25], clickRange: [2, 9], impRange: [300, 700] },
+  // Comparison (generic, no named competitors)
+  { q: "invoicing app with time tracking", posRange: [2, 6], clickRange: [25, 60], impRange: [200, 450] },
+  { q: "simple invoicing app", posRange: [1, 4], clickRange: [18, 45], impRange: [120, 300] },
+  { q: "invoicing app for agencies", posRange: [3, 7], clickRange: [15, 38], impRange: [100, 250] },
+  { q: "spreadsheet invoice alternative", posRange: [5, 12], clickRange: [8, 25], impRange: [200, 500] },
+  { q: "cheapest invoicing software 2026", posRange: [4, 10], clickRange: [10, 28], impRange: [150, 350] },
   // Support / docs
-  { q: "acme api documentation", posRange: [1, 2], clickRange: [30, 70], impRange: [100, 200] },
-  { q: "acme webhook setup", posRange: [1, 3], clickRange: [15, 35], impRange: [50, 120] },
-  { q: "acme zapier integration", posRange: [1, 3], clickRange: [12, 28], impRange: [60, 140] },
-  { q: "acme custom fields", posRange: [1, 2], clickRange: [18, 40], impRange: [70, 160] },
-  { q: "acme bulk import contacts", posRange: [1, 3], clickRange: [10, 25], impRange: [40, 100] },
-  { q: "acme team permissions", posRange: [1, 2], clickRange: [8, 20], impRange: [30, 80] },
-  { q: "acme email tracking", posRange: [1, 4], clickRange: [14, 32], impRange: [80, 180] },
-  { q: "acme mobile app", posRange: [1, 3], clickRange: [20, 50], impRange: [100, 250] },
-  { q: "acme reporting features", posRange: [1, 3], clickRange: [12, 28], impRange: [60, 150] },
-  { q: "crm best practices 2026", posRange: [5, 13], clickRange: [6, 18], impRange: [140, 320] },
+  { q: "quilltab api documentation", posRange: [1, 2], clickRange: [30, 70], impRange: [100, 200] },
+  { q: "quilltab webhook setup", posRange: [1, 3], clickRange: [15, 35], impRange: [50, 120] },
+  { q: "quilltab bank feed", posRange: [1, 3], clickRange: [12, 28], impRange: [60, 140] },
+  { q: "quilltab custom invoice fields", posRange: [1, 2], clickRange: [18, 40], impRange: [70, 160] },
+  { q: "quilltab bulk import clients", posRange: [1, 3], clickRange: [10, 25], impRange: [40, 100] },
+  { q: "quilltab team permissions", posRange: [1, 2], clickRange: [8, 20], impRange: [30, 80] },
+  { q: "quilltab payment links", posRange: [1, 4], clickRange: [14, 32], impRange: [80, 180] },
+  { q: "quilltab mobile app", posRange: [1, 3], clickRange: [20, 50], impRange: [100, 250] },
+  { q: "quilltab tax reports", posRange: [1, 3], clickRange: [12, 28], impRange: [60, 150] },
+  { q: "invoicing best practices 2026", posRange: [5, 13], clickRange: [6, 18], impRange: [140, 320] },
 ];
 
 const PAGES = [
-  { path: "/", title: "Acme CRM — The simple CRM for growing teams" },
-  { path: "/pricing", title: "Pricing — Acme CRM" },
-  { path: "/features", title: "Features — Acme CRM" },
-  { path: "/features/pipeline", title: "Pipeline Management — Acme CRM" },
-  { path: "/features/email", title: "Email Integration — Acme CRM" },
-  { path: "/features/reporting", title: "Reporting & Analytics — Acme CRM" },
-  { path: "/features/automation", title: "Sales Automation — Acme CRM" },
-  { path: "/blog", title: "Blog — Acme CRM" },
-  { path: "/blog/crm-for-startups", title: "Why Every Startup Needs a CRM in 2026" },
-  { path: "/blog/hubspot-alternative", title: "5 Reasons to Switch from HubSpot" },
-  { path: "/blog/sales-pipeline-guide", title: "The Complete Sales Pipeline Guide" },
-  { path: "/blog/crm-implementation", title: "CRM Implementation: A Step-by-Step Guide" },
-  { path: "/blog/email-templates", title: "20 Sales Email Templates That Convert" },
-  { path: "/compare/salesforce", title: "Acme vs Salesforce — CRM Comparison" },
-  { path: "/compare/hubspot", title: "Acme vs HubSpot — CRM Comparison" },
-  { path: "/compare/pipedrive", title: "Acme vs Pipedrive — CRM Comparison" },
-  { path: "/docs", title: "Documentation — Acme CRM" },
-  { path: "/docs/api", title: "API Reference — Acme CRM" },
-  { path: "/integrations", title: "Integrations — Acme CRM" },
-  { path: "/about", title: "About Us — Acme CRM" },
+  { path: "/", title: "Quilltab · Invoicing for freelancers" },
+  { path: "/pricing", title: "Pricing · Quilltab" },
+  { path: "/features", title: "Features · Quilltab" },
+  { path: "/features/recurring-invoices", title: "Recurring invoices · Quilltab" },
+  { path: "/features/payments", title: "Card and bank payments · Quilltab" },
+  { path: "/features/reports", title: "Reports and tax summaries · Quilltab" },
+  { path: "/features/reminders", title: "Payment reminders · Quilltab" },
+  { path: "/blog", title: "Blog · Quilltab" },
+  { path: "/blog/freelance-invoice-guide", title: "How to write a freelance invoice" },
+  { path: "/blog/late-payment-emails", title: "Late payment emails that get answered" },
+  { path: "/blog/payment-terms", title: "Payment terms, explained" },
+  { path: "/blog/vat-for-freelancers", title: "VAT for freelancers: a short guide" },
+  { path: "/blog/invoice-templates", title: "12 invoice templates for creative work" },
+  { path: "/compare/spreadsheets", title: "Quilltab vs spreadsheets · Quilltab" },
+  { path: "/compare/accounting-suites", title: "Quilltab vs accounting suites · Quilltab" },
+  { path: "/compare/time-trackers", title: "Quilltab vs time trackers · Quilltab" },
+  { path: "/docs", title: "Documentation · Quilltab" },
+  { path: "/docs/api", title: "API reference · Quilltab" },
+  { path: "/integrations", title: "Integrations · Quilltab" },
+  { path: "/about", title: "About · Quilltab" },
 ];
 
+// Issues as the crawler writes them: details carries the remediation text, and
+// orphan / not-in-sitemap rows carry their details.kind. Sample data only.
 const CRAWL_ISSUES: {
   path: string;
-  type: string;
-  severity: string;
+  type: IssueType;
+  severity: IssueSeverity;
   message: string;
+  kind?: "orphan" | "not_in_sitemap";
 }[] = [
-  // CRITICAL (4)
-  { path: "/old-landing", type: "BROKEN_LINK", severity: "CRITICAL", message: "Page returns 404 Not Found" },
-  { path: "/promo/summer-2024", type: "BROKEN_LINK", severity: "CRITICAL", message: "Page returns 404 Not Found" },
-  { path: "/blog/outdated-post", type: "REDIRECT", severity: "CRITICAL", message: "Redirect chain detected (3 hops): /blog/outdated-post → /blog/old → /blog/new → /blog/crm-for-startups" },
+  // CRITICAL (5)
+  { path: "/old-landing", type: "BROKEN_LINK", severity: "CRITICAL", message: "Listed in sitemap.xml and returns 404 Not Found" },
+  { path: "/promo/summer-2025", type: "BROKEN_LINK", severity: "CRITICAL", message: "Linked from /pricing and returns 404 Not Found" },
   { path: "/features/legacy", type: "BROKEN_LINK", severity: "CRITICAL", message: "Page returns 410 Gone" },
-  // WARNING (7)
-  { path: "/blog/email-templates", type: "MISSING_DESCRIPTION", severity: "WARNING", message: "Page is missing meta description" },
+  { path: "/blog/outdated-post", type: "REDIRECT", severity: "CRITICAL", message: "Redirect chain (3 hops): /blog/outdated-post → /blog/old → /blog/new → /blog/freelance-invoice-guide" },
+  { path: "/compare/time-trackers", type: "MISSING_TITLE", severity: "CRITICAL", message: "Page has no <title> element" },
+  // WARNING (9)
+  { path: "/blog/invoice-templates", type: "MISSING_DESCRIPTION", severity: "WARNING", message: "Meta description is empty (content=\"\")" },
+  { path: "/", type: "LARGE_PAGE", severity: "WARNING", message: "Heavy image: hero.gif is 8.4 MB (1920×1440)" },
   { path: "/integrations", type: "DUPLICATE_TITLE", severity: "WARNING", message: "Title duplicated with /features page" },
   { path: "/about", type: "MISSING_H1", severity: "WARNING", message: "Page has no H1 heading tag" },
-  { path: "/docs/api", type: "MULTIPLE_H1", severity: "WARNING", message: "Page has 3 H1 tags — should have exactly one" },
-  { path: "/blog/sales-pipeline-guide", type: "MISSING_ALT", severity: "WARNING", message: "4 images missing alt text" },
-  { path: "/features/reporting", type: "SLOW_PAGE", severity: "WARNING", message: "Page load time is 4.2s (threshold: 3s)" },
-  { path: "/compare/salesforce", type: "MISSING_CANONICAL", severity: "WARNING", message: "Page is missing canonical tag" },
-  // INFO (4)
+  { path: "/docs/api", type: "MULTIPLE_H1", severity: "WARNING", message: "Page has 3 H1 tags, should have exactly one" },
+  { path: "/blog/late-payment-emails", type: "MISSING_ALT", severity: "WARNING", message: "4 images missing alt text" },
+  { path: "/features/reports", type: "SLOW_PAGE", severity: "WARNING", message: "Page load time is 4.2s (threshold: 3s)" },
+  { path: "/compare/spreadsheets", type: "MISSING_CANONICAL", severity: "WARNING", message: "Page is missing canonical tag" },
+  { path: "/blog/payment-terms", type: "MISSING_CANONICAL", severity: "WARNING", message: "Potential orphan page (no internal inlinks found)", kind: "orphan" },
+  // INFO (5)
   { path: "/", type: "MISSING_SCHEMA", severity: "INFO", message: "No structured data (JSON-LD) found on page" },
   { path: "/pricing", type: "MISSING_SCHEMA", severity: "INFO", message: "No structured data (JSON-LD) found on page" },
   { path: "/blog", type: "LARGE_PAGE", severity: "INFO", message: "Page size is 3.4 MB (threshold: 3 MB)" },
-  { path: "/docs", type: "MIXED_CONTENT", severity: "INFO", message: "1 HTTP resource loaded on HTTPS page: http://cdn.example.com/legacy.js" },
+  { path: "/docs", type: "MIXED_CONTENT", severity: "INFO", message: "1 HTTP resource loaded on HTTPS page: http://cdn.example.org/legacy.js" },
+  { path: "/features/payments", type: "MISSING_SITEMAP", severity: "INFO", message: "Crawled page not listed in sitemap", kind: "not_in_sitemap" },
 ];
-
 // -------------------------------------------------------------------------
 // Main
 // -------------------------------------------------------------------------
 
 async function clean() {
   // Find and delete demo site by domain pattern
-  const sites = await db.site.findMany({ where: { domain: DEMO_DOMAIN } });
+  const sites = await db.site.findMany({
+    where: { domain: { in: [DEMO_DOMAIN, ...OLD_DEMO_DOMAINS] } },
+  });
   if (sites.length === 0) {
-    console.log("No demo site found — nothing to clean.");
+    console.log("No demo site found, nothing to clean.");
     return;
   }
   for (const site of sites) {
@@ -194,70 +217,63 @@ async function seed() {
   });
   console.log(`Created site: ${site.domain} (${site.id})`);
 
-  // 2. Seed keywords — 28 days of data for each keyword
-  let kwCount = 0;
+  // 2. Seed keywords: two 28-day periods, so the overview compares the last
+  // 28 days with a realistic previous 28. Older days carry slightly less
+  // traffic and slightly worse positions (a gentle upward trend).
+  const keywordRows = [];
   for (const kw of KEYWORDS) {
-    for (let day = 0; day < 28; day++) {
-      const date = daysAgo(day + 3); // 3-day data lag
-      const pos = randf(kw.posRange[0], kw.posRange[1], 1);
-      const imps = rand(kw.impRange[0], kw.impRange[1]);
-      const clicks = Math.min(rand(kw.clickRange[0], kw.clickRange[1]), imps);
-      const ctr = imps > 0 ? parseFloat((clicks / imps).toFixed(4)) : 0;
-      const page = `https://acme.com${pick(PAGES).path}`;
-
-      await db.keyword.create({
-        data: {
-          siteId: site.id,
-          query: kw.q,
-          date,
-          clicks,
-          impressions: imps,
-          ctr,
-          position: pos,
-          page,
-          device: pick(["DESKTOP", "MOBILE"]),
-          country: "USA",
-        },
+    for (let day = 0; day < HISTORY_DAYS; day++) {
+      const f = trend(day);
+      const pos = Math.max(1, randf(kw.posRange[0], kw.posRange[1], 1) + drift(day));
+      const imps = Math.round(rand(kw.impRange[0], kw.impRange[1]) * f);
+      const clicks = Math.min(Math.round(rand(kw.clickRange[0], kw.clickRange[1]) * f), imps);
+      keywordRows.push({
+        siteId: site.id,
+        query: kw.q,
+        date: daysAgo(day + 3), // 3-day data lag
+        clicks,
+        impressions: imps,
+        ctr: imps > 0 ? parseFloat((clicks / imps).toFixed(4)) : 0,
+        position: parseFloat(pos.toFixed(1)),
+        page: `https://${DEMO_DOMAIN}${pick(PAGES).path}`,
+        device: pick(["DESKTOP", "MOBILE"]),
+        country: "USA",
       });
-      kwCount++;
     }
   }
-  console.log(`Created ${kwCount} keyword records (${KEYWORDS.length} keywords × 28 days)`);
+  await db.keyword.createMany({ data: keywordRows });
+  console.log(`Created ${keywordRows.length} keyword records (${KEYWORDS.length} keywords × ${HISTORY_DAYS} days)`);
 
-  // 3. Seed pages — 28 days of data
-  let pgCount = 0;
+  // 3. Seed pages, same two periods
+  const pageRows = [];
   for (const pg of PAGES) {
-    for (let day = 0; day < 28; day++) {
-      const date = daysAgo(day + 3);
+    for (let day = 0; day < HISTORY_DAYS; day++) {
+      const f = trend(day);
       const isHome = pg.path === "/";
-      const clicks = isHome ? rand(120, 300) : rand(5, 80);
-      const imps = clicks + rand(50, 500);
-      const ctr = parseFloat((clicks / imps).toFixed(4));
-      const pos = isHome ? randf(2, 8, 1) : randf(3, 25, 1);
-
-      await db.page.create({
-        data: {
-          siteId: site.id,
-          url: `https://acme.com${pg.path}`,
-          date,
-          clicks,
-          impressions: imps,
-          ctr,
-          position: pos,
-        },
+      const clicks = Math.round((isHome ? rand(120, 300) : rand(5, 80)) * f);
+      const imps = clicks + Math.round(rand(50, 500) * f);
+      const pos = Math.max(1, (isHome ? randf(2, 8, 1) : randf(3, 25, 1)) + drift(day));
+      pageRows.push({
+        siteId: site.id,
+        url: `https://${DEMO_DOMAIN}${pg.path}`,
+        date: daysAgo(day + 3),
+        clicks,
+        impressions: imps,
+        ctr: parseFloat((clicks / imps).toFixed(4)),
+        position: parseFloat(pos.toFixed(1)),
       });
-      pgCount++;
     }
   }
-  console.log(`Created ${pgCount} page records (${PAGES.length} pages × 28 days)`);
+  await db.page.createMany({ data: pageRows });
+  console.log(`Created ${pageRows.length} page records (${PAGES.length} pages × ${HISTORY_DAYS} days)`);
 
   // 4. Saved keywords
   const savedQueries = [
-    { q: "best crm for startups", notes: "High intent — target with comparison page" },
-    { q: "acme vs hubspot", notes: "Competitor comparison, keep in top 3" },
-    { q: "crm software comparison", notes: "Striking distance — currently pos 8-15" },
-    { q: "small business crm", notes: "Volume keyword, optimise /features page" },
-    { q: "free crm tools", notes: "High volume, low position — create dedicated landing page?" },
+    { q: "best invoicing app for freelancers", notes: "High intent: target with a comparison page" },
+    { q: "simple invoicing app", notes: "Keep in the top 3" },
+    { q: "invoice software comparison", notes: "Striking distance: currently pos 8 to 15" },
+    { q: "small business invoicing", notes: "Volume keyword, optimise the /features page" },
+    { q: "free invoice generator", notes: "High volume, low position: a dedicated landing page?" },
   ];
   for (const sk of savedQueries) {
     await db.savedKeyword.create({
@@ -266,14 +282,15 @@ async function seed() {
   }
   console.log(`Created ${savedQueries.length} saved keywords`);
 
-  // 5. Crawl + audit pages + issues
+  // 5. Crawl + audit pages + issues. pagesFound is set once the rows exist,
+  // from their count, as the crawler does (one AuditPage row per crawled page).
   const crawl = await db.crawl.create({
     data: {
       siteId: site.id,
       status: "COMPLETED",
       startedAt: daysAgo(1),
       finishedAt: new Date(daysAgo(1).getTime() + 47_000), // 47 seconds
-      pagesFound: 42,
+      pagesFound: 0,
       issuesFound: CRAWL_ISSUES.length,
       healthScore: 72,
       maxPages: 200,
@@ -282,25 +299,25 @@ async function seed() {
 
   // Audit pages for every page in PAGES
   for (const pg of PAGES) {
-    const url = `https://acme.com${pg.path}`;
+    const url = `https://${DEMO_DOMAIN}${pg.path}`;
     await db.auditPage.create({
       data: {
         crawlId: crawl.id,
         url,
         statusCode: 200,
-        title: pg.title,
-        description: pg.path === "/" ? "Acme CRM helps growing teams close more deals with less effort." : `Learn about ${pg.title.split("—")[0].trim().toLowerCase()} at Acme CRM.`,
+        title: pg.path === "/compare/time-trackers" ? null : pg.title,
+        description: pg.path === "/blog/invoice-templates" ? "" : pg.path === "/" ? "Quilltab sends invoices, chases late payments and keeps your freelance books tidy." : `Learn about ${pg.title.split("·")[0].trim().toLowerCase()} at Quilltab.`,
         canonical: url,
         h1Count: pg.path === "/about" ? 0 : pg.path === "/docs/api" ? 3 : 1,
-        h1s: pg.path === "/about" ? [] : pg.path === "/docs/api" ? [pg.title, "Authentication", "Endpoints"] : [pg.title.split("—")[0].trim()],
+        h1s: pg.path === "/about" ? [] : pg.path === "/docs/api" ? [pg.title, "Authentication", "Endpoints"] : [pg.title.split("·")[0].trim()],
         wordCount: rand(300, 2800),
         imageCount: rand(1, 12),
-        imagesMissingAlt: pg.path === "/blog/sales-pipeline-guide" ? 4 : rand(0, 1),
+        imagesMissingAlt: pg.path === "/blog/late-payment-emails" ? 4 : rand(0, 1),
         internalLinks: rand(8, 35),
         externalLinks: rand(0, 6),
-        hasSchema: ["/", "/blog/crm-for-startups", "/blog/sales-pipeline-guide"].includes(pg.path),
+        hasSchema: ["/", "/blog/freelance-invoice-guide", "/blog/late-payment-emails"].includes(pg.path),
         contentScore: rand(55, 95),
-        responseTimeMs: pg.path === "/features/reporting" ? 4200 : rand(120, 900),
+        responseTimeMs: pg.path === "/features/reports" ? 4200 : rand(120, 900),
         byteSize: pg.path === "/blog" ? 3_400_000 : rand(30_000, 450_000),
         indexable: true,
       },
@@ -308,14 +325,14 @@ async function seed() {
   }
 
   // Add a few extra crawled pages for broken links
-  for (const extra of ["/old-landing", "/promo/summer-2024", "/features/legacy", "/blog/outdated-post"]) {
+  for (const extra of ["/old-landing", "/promo/summer-2025", "/features/legacy", "/blog/outdated-post"]) {
     const code = extra === "/features/legacy" ? 410 : extra === "/blog/outdated-post" ? 301 : 404;
     await db.auditPage.create({
       data: {
         crawlId: crawl.id,
-        url: `https://acme.com${extra}`,
+        url: `https://${DEMO_DOMAIN}${extra}`,
         statusCode: code,
-        redirectUrl: code === 301 ? "https://acme.com/blog/old" : undefined,
+        redirectUrl: code === 301 ? `https://${DEMO_DOMAIN}/blog/old` : undefined,
         title: null,
         wordCount: 0,
         contentScore: 0,
@@ -326,19 +343,62 @@ async function seed() {
     });
   }
 
-  // Crawl issues
+  // Crawl issues, with details shaped like the crawler's
   for (const issue of CRAWL_ISSUES) {
     await db.crawlIssue.create({
       data: {
         crawlId: crawl.id,
-        url: `https://acme.com${issue.path}`,
-        type: issue.type as any,
-        severity: issue.severity as any,
+        url: `https://${DEMO_DOMAIN}${issue.path}`,
+        type: issue.type,
+        severity: issue.severity,
         message: issue.message,
+        details:
+          issue.kind === "orphan"
+            ? { kind: "orphan", contentScore: rand(30, 50) }
+            : {
+                ...(issue.kind ? { kind: issue.kind } : {}),
+                howToFix: REMEDIATION[issue.type]?.howToFix ?? null,
+              },
       },
     });
   }
-  console.log(`Created crawl (health: 72/100) with ${PAGES.length + 4} audit pages and ${CRAWL_ISSUES.length} issues`);
+
+  // The crawler's own bookkeeping rows (details.kind crawl_summary and
+  // content_score). The app never lists or counts them as issues. The summary
+  // totals match the rows above.
+  const contentAvg = await db.auditPage.aggregate({ where: { crawlId: crawl.id }, _avg: { contentScore: true } });
+  const countKind = (kind: "orphan" | "not_in_sitemap") => CRAWL_ISSUES.filter((i) => i.kind === kind).length;
+  await db.crawlIssue.create({
+    data: {
+      crawlId: crawl.id,
+      url: `https://${DEMO_DOMAIN}/`,
+      type: "MISSING_SCHEMA",
+      severity: "INFO",
+      message: "Crawl summary",
+      details: {
+        kind: "crawl_summary",
+        sitemapUrls: 21,
+        missingFromSitemap: countKind("not_in_sitemap"),
+        orphans: countKind("orphan"),
+        avgContentScore: Math.round(contentAvg._avg.contentScore ?? 0),
+      },
+    },
+  });
+  for (const path of ["/blog", "/about", "/blog/vat-for-freelancers"]) {
+    await db.crawlIssue.create({
+      data: {
+        crawlId: crawl.id,
+        url: `https://${DEMO_DOMAIN}${path}`,
+        type: "MISSING_DESCRIPTION",
+        severity: "INFO",
+        message: `On-page content score ${rand(50, 59)}/100`,
+        details: { kind: "content_score", contentScore: rand(50, 59) },
+      },
+    });
+  }
+  const pagesFound = await db.auditPage.count({ where: { crawlId: crawl.id } });
+  await db.crawl.update({ where: { id: crawl.id }, data: { pagesFound } });
+  console.log(`Created crawl (health: 72/100) with ${pagesFound} audit pages, ${CRAWL_ISSUES.length} issues and 4 internal rows`);
 
   // 6. Some audit links
   const linkPairs = [
@@ -346,26 +406,26 @@ async function seed() {
     { from: "/", to: "/features" },
     { from: "/", to: "/blog" },
     { from: "/pricing", to: "/features" },
-    { from: "/blog", to: "/blog/crm-for-startups" },
-    { from: "/blog", to: "/blog/hubspot-alternative" },
-    { from: "/blog/crm-for-startups", to: "/features" },
-    { from: "/blog/crm-for-startups", to: "/pricing" },
-    { from: "/features", to: "/features/pipeline" },
-    { from: "/features", to: "/features/email" },
-    { from: "/compare/hubspot", to: "/pricing" },
-    { from: "/blog/hubspot-alternative", to: "/compare/hubspot" },
-    // External links
-    { from: "/blog/crm-for-startups", to: "https://www.gartner.com/reviews/market/crm" },
-    { from: "/integrations", to: "https://zapier.com/apps/acme-crm" },
+    { from: "/blog", to: "/blog/freelance-invoice-guide" },
+    { from: "/blog", to: "/blog/late-payment-emails" },
+    { from: "/blog/freelance-invoice-guide", to: "/features" },
+    { from: "/blog/freelance-invoice-guide", to: "/pricing" },
+    { from: "/features", to: "/features/recurring-invoices" },
+    { from: "/features", to: "/features/payments" },
+    { from: "/compare/spreadsheets", to: "/pricing" },
+    { from: "/blog/late-payment-emails", to: "/compare/spreadsheets" },
+    // External links (reserved example domains, no real companies)
+    { from: "/blog/freelance-invoice-guide", to: "https://www.example.org/invoice-basics" },
+    { from: "/integrations", to: "https://www.example.net/apps/quilltab" },
   ];
   for (const lp of linkPairs) {
     const isInternal = lp.to.startsWith("/");
     await db.auditLink.create({
       data: {
         crawlId: crawl.id,
-        sourceUrl: `https://acme.com${lp.from}`,
-        targetUrl: isInternal ? `https://acme.com${lp.to}` : lp.to,
-        anchorText: isInternal ? PAGES.find((p) => p.path === lp.to)?.title?.split("—")[0].trim() ?? "Link" : "External resource",
+        sourceUrl: `https://${DEMO_DOMAIN}${lp.from}`,
+        targetUrl: isInternal ? `https://${DEMO_DOMAIN}${lp.to}` : lp.to,
+        anchorText: isInternal ? PAGES.find((p) => p.path === lp.to)?.title?.split("·")[0].trim() ?? "Link" : "External resource",
         isInternal,
         isNofollow: !isInternal,
         statusCode: 200,
@@ -374,8 +434,8 @@ async function seed() {
   }
   console.log(`Created ${linkPairs.length} audit links`);
 
-  // 7. Core Web Vitals — 4 reports (mobile + desktop, 2 dates)
-  const vitalsPages = ["/", "/pricing", "/blog/crm-for-startups", "/features"];
+  // 7. Core Web Vitals: 4 reports (mobile + desktop, 2 dates)
+  const vitalsPages = ["/", "/pricing", "/blog/freelance-invoice-guide", "/features"];
   let vitalsCount = 0;
   for (const vp of vitalsPages) {
     for (const device of ["MOBILE", "DESKTOP"]) {
@@ -384,7 +444,7 @@ async function seed() {
         await db.vitalsReport.create({
           data: {
             siteId: site.id,
-            url: `https://acme.com${vp}`,
+            url: `https://${DEMO_DOMAIN}${vp}`,
             device,
             date: daysAgo(week * 7),
             lcp: isMobile ? randf(1.8, 3.2) : randf(1.2, 2.4),
@@ -425,7 +485,7 @@ async function seed() {
   });
   console.log("Created 2 alert rules");
 
-  console.log("\n✅ Demo seed complete! Visit your site to see the data.");
+  console.log("\nDemo seed complete. Open the site in the app to see the data.");
 }
 
 // -------------------------------------------------------------------------

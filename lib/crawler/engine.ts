@@ -1,18 +1,32 @@
 import { createHash } from "crypto";
 import { lookup } from "dns/promises";
+import { BlockList, isIPv4, isIPv6 } from "net";
 import { db } from "@/lib/db";
 import type { IssueSeverity, IssueType } from "@prisma/client";
-import robotsParser from "robots-parser";
 import { REMEDIATION } from "./remediation";
+import { countVisibleIssues } from "./issue-filter";
+import {
+  CrawlDelayStopError,
+  ROBOTS_MAX_BYTES,
+  RobotsBlockedError,
+  RobotsPolicy,
+  type RobotsFetch,
+  type RobotsReport,
+} from "./robots";
 
 const ABSOLUTE_MAX_PAGES = 2000;
 const BATCH_SIZE = 15;
 const BATCH_DELAY_MS = 100;
 const FETCH_TIMEOUT_MS = 12_000;
+// How often a running crawl records progress at most (lastProgressAt, pagesFound).
+// lib/crawler/lifecycle.ts treats a crawl that stops recording it as interrupted.
+const PROGRESS_EVERY_MS = 5_000;
 const MAX_REDIRECTS = 5;
 const MAX_RESPONSE_BYTES = 10 * 1024 * 1024; // 10 MB
-const USER_AGENT =
-  "CrawlSEOBot/1.0 (+https://crawlseo.dev; self-hosted SEO audit)";
+// A crawl stops after this many minutes (CRAWL_MAX_MINUTES overrides it).
+// Mostly reached on sites that set a Crawl-delay.
+const DEFAULT_CRAWL_MAX_MINUTES = 30;
+export const USER_AGENT = "CrawlSEOBot/1.0 (+https://crawlseo.cloud)";
 
 /* ------------------------------------------------------------------ */
 /*  Known managed-infrastructure path patterns                        */
@@ -112,6 +126,15 @@ function normalizeUrl(raw: string, base: string): string | null {
   }
 }
 
+function isHttpUrl(raw: string): boolean {
+  try {
+    const { protocol } = new URL(raw);
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 function sameHost(a: string, b: string): boolean {
   try {
     return (
@@ -132,29 +155,44 @@ function originOf(url: string): string {
 /*  SSRF protection                                                   */
 /* ------------------------------------------------------------------ */
 
-function isPrivateIp(ip: string): boolean {
+// Private, loopback, link-local, shared and reserved ranges. BlockList
+// matches IPv6 subnets however the address is written ("::" vs "0:0:…:0",
+// "64:ff9b::7f00:1" vs "64:ff9b::127.0.0.1"), which prefix strings cannot.
+const PRIVATE_RANGES = new BlockList();
+for (const [net, prefix] of [
+  ["0.0.0.0", 8],
+  ["10.0.0.0", 8],
+  ["100.64.0.0", 10],    // shared address space (CGNAT)
+  ["127.0.0.0", 8],
+  ["169.254.0.0", 16],
+  ["172.16.0.0", 12],
+  ["192.168.0.0", 16],
+  ["198.18.0.0", 15],    // benchmarking
+  ["224.0.0.0", 4],      // multicast
+  ["240.0.0.0", 4],      // reserved, incl. 255.255.255.255
+] as const) {
+  PRIVATE_RANGES.addSubnet(net, prefix, "ipv4");
+}
+for (const [net, prefix] of [
+  ["::", 128],           // unspecified
+  ["::1", 128],          // loopback
+  ["64:ff9b::", 96],     // NAT64, embeds an IPv4 address
+  ["2002::", 16],        // 6to4, embeds an IPv4 address
+  ["fc00::", 7],         // unique local
+  ["fe80::", 10],        // link-local
+] as const) {
+  PRIVATE_RANGES.addSubnet(net, prefix, "ipv6");
+}
+
+export function isPrivateIp(ip: string): boolean {
   // IPv4-mapped IPv6 (::ffff:x.x.x.x)
   const v4mapped = ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
   if (v4mapped) return isPrivateIp(v4mapped[1]);
 
-  // IPv4
-  const parts = ip.split(".").map(Number);
-  if (parts.length === 4 && parts.every((n) => n >= 0 && n <= 255)) {
-    if (parts[0] === 0) return true;                                  // 0.0.0.0/8
-    if (parts[0] === 127) return true;                                // 127.0.0.0/8
-    if (parts[0] === 10) return true;                                 // 10.0.0.0/8
-    if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true; // 172.16.0.0/12
-    if (parts[0] === 192 && parts[1] === 168) return true;            // 192.168.0.0/16
-    if (parts[0] === 169 && parts[1] === 254) return true;            // 169.254.0.0/16
-    return false;
-  }
-
-  // IPv6
-  const lower = ip.toLowerCase();
-  if (lower === "::1") return true;
-  if (lower.startsWith("fc") || lower.startsWith("fd")) return true;  // fc00::/7
-  if (lower.startsWith("fe80")) return true;                           // fe80::/10 link-local
-  return false;
+  if (isIPv4(ip)) return PRIVATE_RANGES.check(ip, "ipv4");
+  if (isIPv6(ip)) return PRIVATE_RANGES.check(ip, "ipv6");
+  // Not an IP at all: refuse rather than guess.
+  return true;
 }
 
 async function assertPublicUrl(url: string): Promise<void> {
@@ -321,11 +359,13 @@ export function parseHtml(
   // Images
   const imgTags = tagsNamed(html, "img");
   const imageCount = imgTags.length;
-  // An empty alt still counts as missing, exactly as before: the old pattern
-  // required `[^"']+`. A whitespace-only alt still counts as PRESENT, also as
-  // before — values are not trimmed.
+  // Only a genuinely absent alt attribute counts as missing. `alt=""` is the
+  // spec-mandated markup for a decorative image — it tells assistive tech to
+  // skip the image — so flagging it inverts the accessibility advice the issue
+  // is meant to give. A whitespace-only alt still counts as present: values are
+  // not trimmed.
   const imagesMissingAlt = imgTags.filter(
-    (tag) => !parseAttrs(tag).get("alt")
+    (tag) => !parseAttrs(tag).has("alt")
   ).length;
 
   // Body text and word count
@@ -424,7 +464,11 @@ export function parseHtml(
 /*  Fetch helpers                                                     */
 /* ------------------------------------------------------------------ */
 
-async function readBodyCapped(res: Response): Promise<ArrayBuffer> {
+async function readBodyCapped(
+  res: Response,
+  limit = MAX_RESPONSE_BYTES,
+  truncate = false
+): Promise<ArrayBuffer> {
   if (!res.body) return new ArrayBuffer(0);
   const reader = res.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -432,11 +476,14 @@ async function readBodyCapped(res: Response): Promise<ArrayBuffer> {
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
-    total += value.byteLength;
-    if (total > MAX_RESPONSE_BYTES) {
+    if (total + value.byteLength > limit) {
       await reader.cancel();
-      throw new Error(`Response exceeded ${MAX_RESPONSE_BYTES} bytes`);
+      if (!truncate) throw new Error(`Response exceeded ${limit} bytes`);
+      chunks.push(value.subarray(0, limit - total));
+      total = limit;
+      break;
     }
+    total += value.byteLength;
     chunks.push(value);
   }
   const buf = new Uint8Array(total);
@@ -448,7 +495,98 @@ async function readBodyCapped(res: Response): Promise<ArrayBuffer> {
   return buf.buffer;
 }
 
-async function fetchPage(url: string): Promise<{
+class FetchTimeoutError extends Error {
+  constructor(url: string) {
+    super(`Timed out after ${FETCH_TIMEOUT_MS / 1000} s: ${url}`);
+  }
+}
+
+class TooManyRedirectsError extends Error {
+  constructor() {
+    super(`Too many redirects (>${MAX_REDIRECTS})`);
+  }
+}
+
+/** Runs around every request of fetchPublic, redirect hops included. */
+type HopHooks = {
+  /** Throws to stop before the request, e.g. when robots.txt disallows it. */
+  guard?: (url: string) => Promise<void>;
+  /** Waits until the origin accepts a request; returns the function that marks it done. */
+  pace?: (url: string) => Promise<() => void>;
+};
+
+type PublicResponse = {
+  res: Response;
+  finalUrl: string;
+  /** Time spent on requests so far, without Crawl-delay waits. */
+  activeMs: () => number;
+  /** True once the request timed out, also while the body is read. */
+  timedOut: () => boolean;
+  /** Call once the body is read: clears the timeout and frees the origin. */
+  done: () => void;
+};
+
+/**
+ * fetch() that follows redirects itself, up to MAX_REDIRECTS, so every hop,
+ * not just the first URL, is checked against private/reserved IPs and against
+ * the hooks. Each request has its own FETCH_TIMEOUT_MS, started after any
+ * Crawl-delay wait.
+ */
+async function fetchPublic(
+  url: string,
+  headers: Record<string, string>,
+  hooks: HopHooks = {}
+): Promise<PublicResponse> {
+  let currentUrl = url;
+  let priorMs = 0;
+
+  for (let redirects = 0; ; redirects++) {
+    // A URL that is not http(s), or whose host does not resolve or is
+    // private, fails here as a fetch error (a broken link), before robots.txt
+    // is consulted: there is no robots.txt to read for it.
+    if (!isHttpUrl(currentUrl)) throw new Error(`Unsupported URL: ${currentUrl}`);
+    await assertPublicUrl(currentUrl);
+    await hooks.guard?.(currentUrl);
+    const release = (await hooks.pace?.(currentUrl)) ?? (() => {});
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    const started = Date.now();
+    const done = () => {
+      clearTimeout(timer);
+      release();
+    };
+
+    let res: Response;
+    try {
+      res = await fetch(currentUrl, { headers, signal: controller.signal, redirect: "manual" });
+    } catch (err) {
+      done();
+      throw controller.signal.aborted ? new FetchTimeoutError(currentUrl) : err;
+    }
+
+    const location =
+      res.status >= 300 && res.status < 400 ? res.headers.get("location") : null;
+    if (!location) {
+      const base = priorMs;
+      return {
+        res,
+        finalUrl: currentUrl,
+        activeMs: () => base + Date.now() - started,
+        timedOut: () => controller.signal.aborted,
+        done,
+      };
+    }
+
+    priorMs += Date.now() - started;
+    await res.body?.cancel().catch(() => {});
+    done();
+    // `redirects` have been followed; this one would make redirects + 1.
+    if (redirects === MAX_REDIRECTS) throw new TooManyRedirectsError();
+    currentUrl = new URL(location, currentUrl).toString();
+  }
+}
+
+async function fetchPage(url: string, hooks: HopHooks): Promise<{
   statusCode: number;
   html: string;
   finalUrl: string;
@@ -456,74 +594,81 @@ async function fetchPage(url: string): Promise<{
   bytes: number;
   contentType: string;
 }> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  const started = Date.now();
+  const r = await fetchPublic(
+    url,
+    { "User-Agent": USER_AGENT, Accept: "text/html,application/xhtml+xml" },
+    hooks
+  );
   try {
-    let currentUrl = url;
-    let res: Response | null = null;
-
-    for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-      await assertPublicUrl(currentUrl);
-      res = await fetch(currentUrl, {
-        redirect: "manual",
-        signal: controller.signal,
-        headers: {
-          "User-Agent": USER_AGENT,
-          Accept: "text/html,application/xhtml+xml",
-        },
-      });
-      if (res.status >= 300 && res.status < 400) {
-        const location = res.headers.get("location");
-        if (!location) break;
-        currentUrl = new URL(location, currentUrl).toString();
-        if (hop === MAX_REDIRECTS - 1) {
-          throw new Error(`Too many redirects (>${MAX_REDIRECTS})`);
-        }
-        continue;
-      }
-      break;
-    }
-
-    if (!res) throw new Error("No response");
-
-    const buf = await readBodyCapped(res);
+    const buf = await readBodyCapped(r.res);
     const bytes = buf.byteLength;
-    const contentType = res.headers.get("content-type") || "";
+    const contentType = r.res.headers.get("content-type") || "";
     const html =
       contentType.includes("html") || contentType.includes("xml")
         ? new TextDecoder("utf-8", { fatal: false }).decode(buf)
         : "";
     return {
-      statusCode: res.status,
+      statusCode: r.res.status,
       html,
-      finalUrl: currentUrl,
-      loadMs: Date.now() - started,
+      finalUrl: r.finalUrl,
+      loadMs: r.activeMs(),
       bytes,
       contentType,
     };
+  } catch (err) {
+    throw r.timedOut() ? new FetchTimeoutError(r.finalUrl) : err;
   } finally {
-    clearTimeout(timer);
+    r.done();
   }
 }
 
-async function fetchText(url: string): Promise<string | null> {
+/** Sitemap (or any text) body, or null on any failure or blocked hop. */
+export async function fetchText(url: string, hooks: HopHooks = {}): Promise<string | null> {
   try {
-    await assertPublicUrl(url);
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    const r = await fetchPublic(url, { "User-Agent": USER_AGENT }, hooks);
     try {
-      const res = await fetch(url, {
-        signal: controller.signal,
-        headers: { "User-Agent": USER_AGENT },
-      });
-      if (!res.ok) return null;
-      return await res.text();
+      if (!r.res.ok) return null;
+      return await r.res.text();
     } finally {
-      clearTimeout(timer);
+      r.done();
     }
   } catch {
     return null;
+  }
+}
+
+/**
+ * One origin's robots.txt: up to MAX_REDIRECTS redirects, at most
+ * ROBOTS_MAX_BYTES parsed. robots.txt itself is never subject to robots.txt.
+ */
+async function fetchRobotsTxt(origin: string): Promise<RobotsFetch> {
+  const url = `${origin}/robots.txt`;
+  try {
+    await assertPublicUrl(url);
+  } catch (err) {
+    // No host to ask: not a robots.txt answer. The URLs fail as broken links.
+    return { kind: "no-host", error: err instanceof Error ? err.message : String(err) };
+  }
+  let r: PublicResponse;
+  try {
+    r = await fetchPublic(url, { "User-Agent": USER_AGENT });
+  } catch (err) {
+    if (err instanceof TooManyRedirectsError) return { kind: "too-many-redirects" };
+    if (err instanceof FetchTimeoutError) return { kind: "error", reason: "timeout" };
+    return { kind: "error", reason: "network error" };
+  }
+  try {
+    if (!r.res.ok) {
+      await r.res.body?.cancel().catch(() => {});
+      return { kind: "response", status: r.res.status, text: "" };
+    }
+    const buf = await readBodyCapped(r.res, ROBOTS_MAX_BYTES, true);
+    const text = new TextDecoder("utf-8", { fatal: false }).decode(buf);
+    return { kind: "response", status: r.res.status, text };
+  } catch {
+    return { kind: "error", reason: r.timedOut() ? "timeout" : "network error" };
+  } finally {
+    r.done();
   }
 }
 
@@ -559,7 +704,7 @@ export function issuesFromPage(page: PageSnapshot, _seedOrigin: string): IssueIn
         url,
         type: "BROKEN_LINK",
         severity: "INFO",
-        message: `Managed infra endpoint (${infra.provider}) — expected, not a broken link`,
+        message: `Managed infra endpoint (${infra.provider}), expected, not a broken link`,
         details: {
           statusCode: page.statusCode,
           provider: infra.provider,
@@ -697,7 +842,14 @@ export type CrawlResult = {
   missingFromSitemap: number;
   orphanCandidates: number;
   avgContentScore: number;
+  robots: RobotsReport;
 };
+
+/** CRAWL_MAX_MINUTES, or DEFAULT_CRAWL_MAX_MINUTES when unset or invalid. */
+function crawlMaxMinutes(): number {
+  const n = Number(process.env.CRAWL_MAX_MINUTES);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_CRAWL_MAX_MINUTES;
+}
 
 /* ------------------------------------------------------------------ */
 /*  Main crawl function                                               */
@@ -718,16 +870,18 @@ export async function runSiteCrawl(
   const seedUrl = normalizeUrl(seed, seed) || seed;
   const origin = originOf(seedUrl);
 
+  const now = new Date();
   const crawl = existingCrawlId
     ? await db.crawl.update({
         where: { id: existingCrawlId },
-        data: { status: "RUNNING", startedAt: new Date() },
+        data: { status: "RUNNING", startedAt: now, lastProgressAt: now },
       })
     : await db.crawl.create({
         data: {
           siteId,
           status: "RUNNING",
-          startedAt: new Date(),
+          startedAt: now,
+          lastProgressAt: now,
         },
       });
 
@@ -741,11 +895,31 @@ export async function runSiteCrawl(
         data: {
           status: "FAILED",
           finishedAt: new Date(),
+          error: (err instanceof Error ? err.message : String(err)).slice(0, 500),
         },
       })
       .catch(() => {}); // swallow DB errors during cleanup
     throw err;
   }
+}
+
+/**
+ * Records that the crawl is alive, at most every PROGRESS_EVERY_MS. A failed
+ * write does not stop the crawl; the next one catches up.
+ */
+function progressRecorder(crawlId: string) {
+  let last = Date.now(); // runSiteCrawl just set lastProgressAt
+  return async (pagesFound: number) => {
+    const now = Date.now();
+    if (now - last < PROGRESS_EVERY_MS) return;
+    last = now;
+    await db.crawl
+      .update({
+        where: { id: crawlId },
+        data: { lastProgressAt: new Date(now), pagesFound },
+      })
+      .catch(() => {});
+  };
 }
 
 async function executeCrawl(
@@ -755,49 +929,75 @@ async function executeCrawl(
   origin: string,
   maxPages: number
 ): Promise<CrawlResult> {
+  const recordProgress = progressRecorder(crawlId);
   const issues: IssueInput[] = [];
   const pages: PageSnapshot[] = [];
   const allLinks: LinkInfo[] = [];
   const visited = new Set<string>();
   const queue: string[] = [seedUrl];
 
-  /* ---- robots.txt ---- */
-  const robotsUrl = `${origin}/robots.txt`;
-  const robotsText = await fetchText(robotsUrl);
+  /* ---- robots.txt, per origin ---- */
+  const limitMinutes = crawlMaxMinutes();
+  const deadline = Date.now() + limitMinutes * 60_000;
+  const robots = new RobotsPolicy({
+    fetchRobots: fetchRobotsTxt,
+    userAgent: USER_AGENT,
+    deadline,
+    limitMinutes,
+    heartbeat: () => recordProgress(pages.length),
+  });
+  const hooks: HopHooks = {
+    guard: (url) => robots.guard(url),
+    pace: (url) => robots.pace(url),
+  };
+  /** True when robots.txt lets the crawler fetch `url`; counts it otherwise. */
+  const allowed = async (url: string) => {
+    const verdict = await robots.check(url);
+    // "no-host": fetched anyway, so the failed lookup is reported as a broken link.
+    if (verdict === "allowed" || verdict === "no-host") return true;
+    await robots.skip(url, verdict);
+    return false;
+  };
 
-  let robotsChecker: ReturnType<typeof robotsParser> | null = null;
-  if (!robotsText) {
+  const robotsUrl = `${origin}/robots.txt`;
+  const seedRobots = await robots.originFor(seedUrl);
+  if (
+    !seedRobots.hostError &&
+    (seedRobots.outcome === "missing" || seedRobots.outcome === "unreachable")
+  ) {
     issues.push({
       url: robotsUrl,
       type: "MISSING_ROBOTS",
       severity: "WARNING",
-      message: "robots.txt not found or unreachable",
+      message:
+        seedRobots.message ??
+        `robots.txt not found${seedRobots.robotsStatus ? ` (${seedRobots.robotsStatus})` : ""}`,
       details: REMEDIATION.MISSING_ROBOTS
         ? { howToFix: REMEDIATION.MISSING_ROBOTS.howToFix }
         : {},
     });
-  } else {
-    robotsChecker = robotsParser(robotsUrl, robotsText);
   }
 
   /* ---- Sitemap discovery ---- */
   let sitemapUrls: string[] = [];
   const sitemapCandidates = [
+    // Sitemap: lines are free text; a malformed one is ignored, not fatal.
+    ...seedRobots.sitemaps.filter(isHttpUrl),
     `${origin}/sitemap.xml`,
     `${origin}/sitemap_index.xml`,
   ];
-  if (robotsText) {
-    const sm = robotsText.match(/Sitemap:\s*(\S+)/i);
-    if (sm?.[1]) sitemapCandidates.unshift(sm[1]);
-  }
 
   for (const smUrl of sitemapCandidates) {
-    const xml = await fetchText(smUrl);
+    if (!(await allowed(smUrl))) continue;
+    const xml = await fetchText(smUrl, hooks);
+    await recordProgress(0);
     if (!xml) continue;
     if (xml.includes("<sitemapindex")) {
       const childSitemaps = parseSitemapUrls(xml, origin).slice(0, 5);
       for (const child of childSitemaps) {
-        const childXml = await fetchText(child);
+        if (!(await allowed(child))) continue;
+        const childXml = await fetchText(child, hooks);
+        await recordProgress(0);
         if (childXml) sitemapUrls.push(...parseSitemapUrls(childXml, origin));
       }
     } else {
@@ -826,6 +1026,16 @@ async function executeCrawl(
 
   /* ---- Crawl loop with batch concurrency ---- */
   while (queue.length > 0 && pages.length < maxPages) {
+    if (Date.now() >= deadline) {
+      const remaining = new Set<string>();
+      for (const u of queue) {
+        const n = normalizeUrl(u, origin);
+        if (n && !visited.has(n) && sameHost(n, seedUrl)) remaining.add(n);
+      }
+      await robots.timeLimitReached([...remaining]);
+      break;
+    }
+
     // Collect the next batch of unvisited URLs
     const batch: string[] = [];
     while (batch.length < BATCH_SIZE && queue.length > 0 && pages.length + batch.length < maxPages) {
@@ -834,17 +1044,10 @@ async function executeCrawl(
       if (!normalized || visited.has(normalized)) continue;
       if (!sameHost(normalized, seedUrl)) continue;
 
-      // Check robots.txt. isAllowed() returns `undefined` (not `false`) when
-      // the URL's host differs from the one robots.txt was fetched from —
-      // e.g. an apex domain that redirects to www. sameHost() above already
-      // confirms it's the same site, so only an explicit `false` (a real
-      // Disallow match) should block the crawl here.
-      if (robotsChecker && robotsChecker.isAllowed(normalized, USER_AGENT) === false) {
-        visited.add(normalized);
-        continue;
-      }
-
+      // Checked against the robots.txt of the URL's own origin: the bare
+      // domain and www each have their own.
       visited.add(normalized);
+      if (!(await allowed(normalized))) continue;
       batch.push(normalized);
     }
 
@@ -854,7 +1057,7 @@ async function executeCrawl(
     const results = await Promise.allSettled(
       batch.map(async (url) => {
         try {
-          const res = await fetchPage(url);
+          const res = await fetchPage(url, hooks);
           return { url, res, error: null };
         } catch (err) {
           return { url, res: null, error: err };
@@ -866,6 +1069,16 @@ async function executeCrawl(
       if (result.status === "rejected") continue;
       const { url, res, error } = result.value;
 
+      // Not fetched because of robots.txt: information, not an error.
+      if (error instanceof RobotsBlockedError) {
+        await robots.skip(url, error.verdict, error.url !== url ? error.url : undefined);
+        continue;
+      }
+      if (error instanceof CrawlDelayStopError) {
+        await robots.skip(url, "host-skipped");
+        continue;
+      }
+
       if (error || !res) {
         const infra = matchManagedInfra(url);
         if (infra) {
@@ -873,7 +1086,7 @@ async function executeCrawl(
             url,
             type: "BROKEN_LINK",
             severity: "INFO",
-            message: `Managed infra endpoint (${infra.provider}) — expected, not a broken link`,
+            message: `Managed infra endpoint (${infra.provider}), expected, not a broken link`,
             details: {
               provider: infra.provider,
               ...REMEDIATION.MANAGED_INFRA
@@ -946,6 +1159,8 @@ async function executeCrawl(
         }
       }
     }
+
+    await recordProgress(pages.length);
 
     // Small delay between batches to avoid hammering the target
     if (queue.length > 0 && pages.length < maxPages) {
@@ -1044,6 +1259,8 @@ async function executeCrawl(
     });
   }
 
+  const robotsReport = robots.report();
+
   /* ---- Compute scores ---- */
   const healthScore = computeHealthScore(issues, pages.length);
   const avgContentScore =
@@ -1059,6 +1276,7 @@ async function executeCrawl(
     const PAGE_BATCH = 100;
     for (let i = 0; i < pages.length; i += PAGE_BATCH) {
       const chunk = pages.slice(i, i + PAGE_BATCH);
+      await recordProgress(pages.length);
       await db.auditPage.createMany({
         data: chunk.map((p) => ({
           crawlId,
@@ -1095,6 +1313,7 @@ async function executeCrawl(
     const linksToStore = allLinks.slice(0, 10000);
     for (let i = 0; i < linksToStore.length; i += LINK_BATCH) {
       const chunk = linksToStore.slice(i, i + LINK_BATCH);
+      await recordProgress(pages.length);
       await db.auditLink.createMany({
         data: chunk.map((l) => ({
           crawlId,
@@ -1169,20 +1388,23 @@ async function executeCrawl(
         missingFromSitemap: missingFromSitemap.length,
         orphans: orphans.length,
         avgContentScore,
+        robots: robotsReport,
       },
     },
   });
 
   /* ---- Finalize crawl record ---- */
-  const finalIssues = await db.crawlIssue.count({
-    where: { crawlId },
-  });
+  // Count only the issues a user sees: not the summary or content score rows.
+  const finalIssues = await countVisibleIssues(db, crawlId);
 
   await db.crawl.update({
     where: { id: crawlId },
     data: {
       status: "COMPLETED",
       finishedAt: new Date(),
+      lastProgressAt: new Date(),
+      // A crawl marked interrupted that was alive after all still completes.
+      error: null,
       pagesFound: pages.length,
       issuesFound: finalIssues,
       healthScore,
@@ -1198,5 +1420,6 @@ async function executeCrawl(
     missingFromSitemap: missingFromSitemap.length,
     orphanCandidates: orphans.length,
     avgContentScore,
+    robots: robotsReport,
   };
 }

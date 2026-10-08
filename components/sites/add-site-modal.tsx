@@ -87,26 +87,11 @@ export function AddSiteModal({
     setError("");
 
     try {
-      let domain = selectedProperty;
-      if (domain.includes(":")) {
-        domain = domain.split(":")[1];
-      }
-      // URL-prefix properties: https://example.com/
-      try {
-        if (domain.startsWith("http")) {
-          domain = new URL(domain).hostname;
-        }
-      } catch {
-        // keep as-is
-      }
-
+      // The server derives the stored domain from the property.
       const response = await fetch("/api/sites", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          domain,
-          gscProperty: selectedProperty,
-        }),
+        body: JSON.stringify({ gscProperty: selectedProperty }),
       });
 
       const body = await response.json().catch(() => ({}));
@@ -146,13 +131,13 @@ export function AddSiteModal({
 
         <div className="space-y-4">
           {error && (
-            <div className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
+            <div className="rounded-lg border border-danger/30 bg-danger-bg px-3 py-2 text-sm text-danger">
               {error}
             </div>
           )}
 
           {success && (
-            <div className="rounded-lg border border-signal/30 bg-signal-muted px-3 py-2 text-sm text-signal">
+            <div className="rounded-lg border border-success/30 bg-success-bg px-3 py-2 text-sm text-success">
               Site connected. Opening workspace…
             </div>
           )}

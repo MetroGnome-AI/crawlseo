@@ -23,6 +23,16 @@ export async function POST(
       return Response.json({ error: "Not found" }, { status: 404 });
     }
     const result = await syncVitalsForSite(session.user.id, siteId, 5);
+    if (result.error && result.errorCode === "QUOTA_EXCEEDED") {
+      // The raw Google response was already logged by the PageSpeed client.
+      return Response.json(
+        { ...result, error: "PageSpeed Insights quota exhausted", code: result.errorCode },
+        { status: 429 }
+      );
+    }
+    if (result.error) {
+      return Response.json(result, { status: 502 });
+    }
     return Response.json(result);
   } catch (error) {
     console.error(error);

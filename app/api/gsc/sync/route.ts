@@ -1,7 +1,7 @@
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { ReauthRequiredError } from "@/lib/google";
-import { syncSiteGsc } from "@/lib/gsc-sync";
+import { runGSCSync } from "@/lib/workers/gsc-sync";
 
 export async function POST(req: Request) {
   try {
@@ -44,7 +44,9 @@ export async function POST(req: Request) {
       );
     }
 
-    const result = await syncSiteGsc(
+    // Same fetch + upsert as the background worker, so both paths write
+    // identical Keyword/Page rows (see gscDate for the date convention).
+    const result = await runGSCSync(
       session.user.id,
       siteId,
       site.gscProperty,

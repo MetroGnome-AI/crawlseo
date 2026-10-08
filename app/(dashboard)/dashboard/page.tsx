@@ -6,7 +6,6 @@ import { PageHeader } from "@/components/ui/page-header";
 import { EmptyState } from "@/components/ui/empty-state";
 import { AddSiteModal } from "@/components/sites/add-site-modal";
 import { OnboardingChecklist } from "@/components/dashboard/onboarding-checklist";
-import { DataLagBadge } from "@/components/ui/data-lag-badge";
 import { formatDeltaPercent } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -19,15 +18,20 @@ export default async function DashboardPage() {
       id: true,
       domain: true,
       gscProperty: true,
-      _count: { select: { keywords: true, crawls: true } },
+      _count: { select: { keywords: true, pages: true, crawls: true } },
     },
     orderBy: { domain: "asc" },
   });
 
+  // Search Console anonymises the query dimension on low-traffic sites, so a
+  // synced site can have pages but no keywords. Either one means data arrived.
+  const hasData = (s: (typeof sites)[number]) =>
+    s._count.keywords > 0 || s._count.pages > 0;
+
   // Onboarding state
   const hasSites = sites.length > 0;
   const hasGscConnected = sites.some((s) => s.gscProperty);
-  const hasSyncedData = sites.some((s) => s._count.keywords > 0);
+  const hasSyncedData = sites.some(hasData);
   const hasCrawled = sites.some((s) => s._count.crawls > 0);
   const firstSiteId = sites[0]?.id;
 
@@ -35,8 +39,7 @@ export default async function DashboardPage() {
     return (
       <div>
         <PageHeader
-          eyebrow="Workspace"
-          title="Welcome to CrawlSEO"
+          title="Welcome to crawlseo"
           description="Connect Google Search Console properties to track rankings, traffic, and opportunity."
           actions={<AddSiteModal triggerLabel="Connect first site" />}
         />
@@ -59,7 +62,9 @@ export default async function DashboardPage() {
 
   const siteCards = await Promise.all(
     sites.map(async (site) => {
-      if (site._count.keywords === 0) {
+      // Metrics are computed from the Page model (see seo-metrics), so a site
+      // whose sync stored pages but no keywords still has real data to show.
+      if (!hasData(site)) {
         return {
           site,
           metrics: null as Awaited<ReturnType<typeof getSitePeriodMetrics>> | null,
@@ -77,12 +82,10 @@ export default async function DashboardPage() {
   return (
     <div>
       <PageHeader
-        eyebrow="Workspace"
         title="Portfolio overview"
         description={`${sites.length} site${sites.length === 1 ? "" : "s"} · last 28 days vs prior period`}
         actions={
           <div className="flex items-center gap-3">
-            <DataLagBadge />
             <AddSiteModal />
           </div>
         }
@@ -102,25 +105,24 @@ export default async function DashboardPage() {
           <Link
             key={site.id}
             href={`/sites/${site.id}`}
-            className="panel group relative block overflow-hidden p-5 transition hover:border-signal/40"
+            className="panel group relative block overflow-hidden p-5 transition-colors hover:border-line-strong"
           >
-            <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-signal/30 to-transparent opacity-0 transition group-hover:opacity-100" />
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <h2 className="truncate font-heading text-lg font-semibold text-foreground">
+                <h2 className="truncate font-data text-[17px] leading-6 font-medium text-text-strong">
                   {site.domain}
                 </h2>
-                <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                <p className="mt-0.5 truncate font-data text-[12px] text-muted-foreground">
                   {site.gscProperty}
                 </p>
               </div>
-              <span className="text-signal opacity-0 transition group-hover:opacity-100">
+              <span aria-hidden className="text-muted-foreground transition-colors group-hover:text-text-strong">
                 →
               </span>
             </div>
 
             {!metrics ? (
-              <div className="mt-6 rounded-lg border border-dashed border-border/70 bg-muted/20 px-3 py-4 text-sm text-muted-foreground">
+              <div className="mt-6 rounded-md border border-dashed border-line-strong px-3 py-4 text-sm text-muted-foreground">
                 Waiting for first GSC sync…
               </div>
             ) : (
@@ -138,11 +140,11 @@ export default async function DashboardPage() {
                   positive={metrics.deltas.impressions >= 0}
                 />
                 <Stat
-                  label="Avg pos"
+                  label="Avg position"
                   value={
                     metrics.current.avgPosition > 0
                       ? metrics.current.avgPosition.toFixed(1)
-                      : "—"
+                      : "n/a"
                   }
                   delta={
                     metrics.deltas.avgPosition === 0
@@ -176,17 +178,17 @@ function Stat({
   positive?: boolean;
 }) {
   return (
-    <div className="rounded-lg border border-border/50 bg-panel/80 px-3 py-2.5">
-      <p className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+    <div className="rounded-md border border-border-soft bg-bg-soft px-3 py-2.5">
+      <p className="mono-label text-[11px] text-muted-foreground">
         {label}
       </p>
       <div className="mt-1 flex items-baseline justify-between gap-2">
-        <p className="font-data text-base font-semibold text-foreground">{value}</p>
+        <p className="font-data text-[16px] font-medium text-text-strong">{value}</p>
         {delta !== undefined && (
           <span
             className={cn(
-              "font-data text-[11px] font-medium",
-              positive ? "text-signal" : "text-danger"
+              "font-data text-[12px]",
+              positive ? "text-success" : "text-danger"
             )}
           >
             {delta}

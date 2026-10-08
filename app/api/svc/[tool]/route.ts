@@ -24,7 +24,7 @@ import {
 } from "@/lib/seo-metrics";
 import { getAllOpportunities } from "@/lib/seo-opportunities";
 import { runSiteCrawl } from "@/lib/crawler/engine";
-import { syncSiteGsc } from "@/lib/gsc-sync";
+import { runGSCSync } from "@/lib/workers/gsc-sync";
 import { ReauthRequiredError } from "@/lib/google";
 
 function authorized(req: Request): boolean {
@@ -173,7 +173,7 @@ const handlers: Record<string, (args: Args) => Promise<unknown>> = {
   },
 
   // Trigger a GSC sync for one site — the machine-surface twin of the
-  // session route (same core via lib/gsc-sync). Runs as the site's owner
+  // session route (same core: lib/workers/gsc-sync runGSCSync). Runs as the site's owner
   // (instance-level scope, like every other tool here). Lets scheduled
   // engines keep Search Console data current without a browser session.
   async gsc_sync(args) {
@@ -188,7 +188,7 @@ const handlers: Record<string, (args: Args) => Promise<unknown>> = {
     if (!site.gscProperty)
       throw new SvcError(400, "site does not have a GSC property connected");
     try {
-      return await syncSiteGsc(site.userId, siteId, site.gscProperty, daysBack);
+      return await runGSCSync(site.userId, siteId, site.gscProperty, daysBack);
     } catch (err) {
       if (err instanceof ReauthRequiredError)
         throw new SvcError(401, `REAUTH_REQUIRED: ${err.message}`);
